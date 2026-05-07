@@ -261,6 +261,7 @@ type NFTables struct {
 	connTrack          *stack.ConnTrack                    // Conntrack object for tracking connections.
 	connTrackReaper    tcpip.Timer                         // Reaper timer for reaping timed out connections.
 	natEnabled         bool                                // Whether the nat module is enabled.
+	stack              *stack.Stack                        // Parent stack object.
 }
 
 // Ensures NFTables implements the NFTablesInterface.
@@ -754,6 +755,10 @@ var (
 	_ operation = (*metaSet)(nil)
 	_ operation = (*natOp)(nil)
 	_ operation = (*lookupOp)(nil)
+	_ operation = (*fib)(nil)
+	_ operation = (*ctGet)(nil)
+	_ operation = (*ctSet)(nil)
+	_ operation = (*masqOp)(nil)
 )
 
 // OpType represents the type of operation.
@@ -784,6 +789,12 @@ const (
 	OpTypeNAT
 	// OpTypeLookup is the lookup operation type.
 	OpTypeLookup
+	// OpTypeFIB is the FIB operation type.
+	OpTypeFIB
+	// OpTypeCT is the conntrack operation type.
+	OpTypeCT
+	// OpTypeMasq is the masquerade operation type.
+	OpTypeMasq
 	// OpTypeUnknown is the unknown operation type.
 	OpTypeUnknown
 )
@@ -801,6 +812,9 @@ var opTypeStrings = []string{
 	OpTypeMeta:       "meta",
 	OpTypeNAT:        "nat",
 	OpTypeLookup:     "lookup",
+	OpTypeFIB:        "fib",
+	OpTypeCT:         "ct",
+	OpTypeMasq:       "masq",
 	OpTypeUnknown:    "unknown",
 }
 
@@ -1382,6 +1396,7 @@ func (nf *NFTables) DeepCopy() *NFTables {
 		connTrack:          nf.connTrack,
 		connTrackReaper:    nf.connTrackReaper,
 		natEnabled:         nf.natEnabled,
+		stack:              nf.stack,
 	}
 
 	nftCopy.tableHandleCounter.Store(nf.tableHandleCounter.Load())
