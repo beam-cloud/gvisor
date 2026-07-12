@@ -131,7 +131,7 @@ func (op comparison) GetExprName() string {
 
 func (op comparison) Dump() ([]byte, *syserr.AnnotatedError) {
 	m := &nlmsg.Message{}
-	m.PutAttr(linux.NFTA_CMP_SREG, nlmsg.PutU32(uint32(formatRegIdxForDump(op.sregIdx))))
+	m.PutAttr(linux.NFTA_CMP_SREG, formatRegIdxForDump(op.sregIdx))
 	m.PutAttr(linux.NFTA_CMP_OP, nlmsg.PutU32(uint32(op.cop)))
 	regDump, err := dumpDataAttr(op.data)
 	if err != nil {
@@ -153,11 +153,11 @@ var cmpAttrPolicy = []NlaPolicy{
 }
 
 func initComparison(tab *Table, exprInfo ExprInfo) (*comparison, *syserr.AnnotatedError) {
-	attrs, ok := NfParseWithOpts(exprInfo.ExprData, &NfParseOpts{
+	attrs, err := NfParseWithOpts(exprInfo.ExprData, &NfParseOpts{
 		Policy: cmpAttrPolicy,
 	})
-	if !ok {
-		return nil, syserr.NewAnnotatedError(syserr.ErrInvalidArgument, "Nftables: Failed to parse comparison expression data")
+	if err != nil {
+		return nil, err
 	}
 	sreg, ok := AttrNetToHost[uint32](linux.NFTA_CMP_SREG, attrs)
 	if !ok {

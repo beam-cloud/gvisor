@@ -47,6 +47,7 @@ import (
 
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/atomicbitops"
+	"gvisor.dev/gvisor/pkg/marshal"
 	"gvisor.dev/gvisor/pkg/marshal/primitive"
 	"gvisor.dev/gvisor/pkg/rand"
 	"gvisor.dev/gvisor/pkg/sentry/socket/netlink/nlmsg"
@@ -756,6 +757,9 @@ var (
 	_ operation = (*natOp)(nil)
 	_ operation = (*lookupOp)(nil)
 	_ operation = (*fib)(nil)
+	_ operation = (*ctGet)(nil)
+	_ operation = (*ctSet)(nil)
+	_ operation = (*masqOp)(nil)
 )
 
 // OpType represents the type of operation.
@@ -788,6 +792,10 @@ const (
 	OpTypeLookup
 	// OpTypeFIB is the FIB operation type.
 	OpTypeFIB
+	// OpTypeCT is the conntrack operation type.
+	OpTypeCT
+	// OpTypeMasq is the masquerade operation type.
+	OpTypeMasq
 	// OpTypeUnknown is the unknown operation type.
 	OpTypeUnknown
 )
@@ -806,6 +814,8 @@ var opTypeStrings = []string{
 	OpTypeNAT:        "nat",
 	OpTypeLookup:     "lookup",
 	OpTypeFIB:        "fib",
+	OpTypeCT:         "ct",
+	OpTypeMasq:       "masq",
 	OpTypeUnknown:    "unknown",
 }
 
@@ -1148,17 +1158,19 @@ func regNumToIdx(reg uint8, dataLenBytes int) (int, *syserr.AnnotatedError) {
 
 // formatRegIdxForDump formats the register index for the dump operation.
 // net/netfilter/nf_tables_api.c:nft_dump_register
-func formatRegIdxForDump(regIdx int) uint32 {
+func formatRegIdxForDump(regIdx int) marshal.Marshallable {
 	if regIdx >= registersByteSize {
-		return 0
+		return nlmsg.PutU32(0)
 	}
 	if regIdx%linux.NFT_REG_SIZE == 0 {
-		return uint32(regIdx/linux.NFT_REG_SIZE) + linux.NFT_REG_1
+		val := uint32(regIdx/linux.NFT_REG_SIZE) + linux.NFT_REG_1
+		return nlmsg.PutU32(val)
 	}
 	if regIdx%linux.NFT_REG32_SIZE != 0 {
-		return 0
+		return nlmsg.PutU32(0)
 	}
-	return uint32(regIdx/linux.NFT_REG32_SIZE) + linux.NFT_REG32_00
+	val := uint32(regIdx/linux.NFT_REG32_SIZE) + linux.NFT_REG32_00
+	return nlmsg.PutU32(val)
 }
 
 // validateVerdictData validates the verdict data bytes and returns the data as a verdict.

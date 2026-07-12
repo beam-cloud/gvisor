@@ -20,10 +20,12 @@ go_library(
         "nft_byteorder.go",
         "nft_comparison.go",
         "nft_counter.go",
+        "nft_ct.go",
         "nft_fib.go",
         "nft_immediate.go",
         "nft_last.go",
         "nft_lookup.go",
+        "nft_masq.go",
         "nft_meta.go",
         "nft_metaload.go",
         "nft_metaset.go",
@@ -47,6 +49,7 @@ go_library(
         "//pkg/abi/linux",
         "//pkg/atomicbitops",
         "//pkg/log",
+        "//pkg/marshal",
         "//pkg/marshal/primitive",
         "//pkg/rand",
         "//pkg/sentry/socket/netlink/nlmsg",
@@ -57,6 +60,7 @@ go_library(
         "//pkg/tcpip/checksum",
         "//pkg/tcpip/header",
         "//pkg/tcpip/stack",
+        "//pkg/tcpip/transport/tcpconntrack",
     ],
 )
 

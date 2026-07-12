@@ -91,9 +91,9 @@ func (op *lookupOp) GetExprName() string {
 func (op *lookupOp) Dump() ([]byte, *syserr.AnnotatedError) {
 	m := &nlmsg.Message{}
 	m.PutAttrString(linux.NFTA_LOOKUP_SET, op.set.name)
-	m.PutAttr(linux.NFTA_LOOKUP_SREG, nlmsg.PutU32(formatRegIdxForDump(op.sregIdx)))
+	m.PutAttr(linux.NFTA_LOOKUP_SREG, formatRegIdxForDump(op.sregIdx))
 	if op.fillData {
-		m.PutAttr(linux.NFTA_LOOKUP_DREG, nlmsg.PutU32(formatRegIdxForDump(op.dregIdx)))
+		m.PutAttr(linux.NFTA_LOOKUP_DREG, formatRegIdxForDump(op.dregIdx))
 	}
 	var flags uint32
 	if op.invert {
@@ -131,11 +131,11 @@ var lookupPolicy = []NlaPolicy{
 // initLookup initializes a lookup operation.
 // Ref: net/netfilter/nft_lookup.c:nft_lookup_init()
 func initLookup(tab *Table, exprInfo ExprInfo) (*lookupOp, *syserr.AnnotatedError) {
-	lookupAttrs, ok := NfParseWithOpts(exprInfo.ExprData, &NfParseOpts{
+	lookupAttrs, err := NfParseWithOpts(exprInfo.ExprData, &NfParseOpts{
 		Policy: lookupPolicy,
 	})
-	if !ok {
-		return nil, syserr.NewAnnotatedError(syserr.ErrInvalidArgument, "failed to parse lookup expression data")
+	if err != nil {
+		return nil, err
 	}
 
 	setAttr, ok := lookupAttrs[linux.NFTA_LOOKUP_SET]
