@@ -74,7 +74,7 @@ using ::testing::Key;
 using ::testing::Not;
 
 std::vector<std::string> known_controllers = {
-    "cpu", "cpuset", "cpuacct", "devices", "job", "memory", "pids",
+    "cpu", "cpuset", "cpuacct", "devices", "freezer", "job", "memory", "pids",
 };
 
 bool CgroupsAvailable() {
@@ -828,7 +828,7 @@ TEST(ProcCgroups, ProcCgroupsEntries) {
   Cgroup mem = Cgroup::RootCgroup("/sys/fs/cgroup/memory");
   absl::flat_hash_map<std::string, CgroupsEntry> entries =
       ASSERT_NO_ERRNO_AND_VALUE(ProcCgroupsEntries());
-  EXPECT_EQ(entries.size(), 7);
+  EXPECT_EQ(entries.size(), known_controllers.size());
   ASSERT_TRUE(entries.contains("memory"));
   CgroupsEntry mem_e = entries["memory"];
   EXPECT_EQ(mem_e.subsys_name, "memory");
@@ -842,7 +842,7 @@ TEST(ProcCgroups, ProcCgroupsEntries) {
 
   Cgroup cpu = Cgroup::RootCgroup("/sys/fs/cgroup/cpu");
   entries = ASSERT_NO_ERRNO_AND_VALUE(ProcCgroupsEntries());
-  EXPECT_EQ(entries.size(), 7);
+  EXPECT_EQ(entries.size(), known_controllers.size());
   EXPECT_TRUE(entries.contains("memory"));  // Still have memory entry.
   ASSERT_TRUE(entries.contains("cpu"));
   CgroupsEntry cpu_e = entries["cpu"];
@@ -862,7 +862,7 @@ TEST(ProcPIDCgroup, Entries) {
   absl::flat_hash_map<std::string, PIDCgroupEntry> entries =
       ASSERT_NO_ERRNO_AND_VALUE(ProcPIDCgroupEntries(getpid()));
   // All controllers are mounted.
-  EXPECT_EQ(entries.size(), 7);
+  EXPECT_EQ(entries.size(), known_controllers.size());
   PIDCgroupEntry mem_e = entries["memory"];
   EXPECT_GE(mem_e.hierarchy, 1);
   EXPECT_EQ(mem_e.controllers, "memory");
@@ -872,7 +872,7 @@ TEST(ProcPIDCgroup, Entries) {
   Cgroup c1 = Cgroup::RootCgroup("/sys/fs/cgroup/cpu");
   entries = ASSERT_NO_ERRNO_AND_VALUE(ProcPIDCgroupEntries(getpid()));
   // All controllers are mounted.
-  EXPECT_EQ(entries.size(), 7);
+  EXPECT_EQ(entries.size(), known_controllers.size());
   EXPECT_TRUE(entries.contains("memory"));  // Still have memory entry.
   PIDCgroupEntry cpu_e = entries["cpu"];
   EXPECT_GE(cpu_e.hierarchy, 1);
@@ -1115,6 +1115,53 @@ TEST(Cgroup, ProcSelfCgroupNoV2LineIfUnmounted) {
   // mounted at least once. Since cgroup v2 has not been mounted in this test
   // environment, the string "0::" should not appear in /proc/self/cgroup.
   EXPECT_FALSE(absl::StrContains(content, "0::"));
+}
+
+TEST(FreezerCgroup, FreezerState) {
+  SKIP_IF(!CgroupsAvailable());
+
+  Cgroup top = Cgroup::RootCgroup("/sys/fs/cgroup/freezer");
+  EXPECT_THAT(top.ReadControlFile("freezer.state"),
+              IsPosixErrorOkAndHolds("THAWED\n"));
+  EXPECT_THAT(top.ReadControlFile("freezer.self_freezing"),
+              IsPosixErrorOkAndHolds("0\n"));
+  EXPECT_THAT(top.ReadControlFile("freezer.parent_freezing"),
+              IsPosixErrorOkAndHolds("0\n"));
+
+  Cgroup parent = ASSERT_NO_ERRNO_AND_VALUE(top.CreateChild("parent"));
+  EXPECT_THAT(parent.ReadControlFile("freezer.state"),
+              IsPosixErrorOkAndHolds("THAWED\n"));
+  EXPECT_THAT(parent.ReadControlFile("freezer.self_freezing"),
+              IsPosixErrorOkAndHolds("0\n"));
+  EXPECT_THAT(parent.ReadControlFile("freezer.parent_freezing"),
+              IsPosixErrorOkAndHolds("0\n"));
+
+  ASSERT_NO_ERRNO(parent.WriteControlFile("freezer.state", "FROZEN"));
+  EXPECT_THAT(parent.ReadControlFile("freezer.state"),
+              IsPosixErrorOkAndHolds("FROZEN\n"));
+  EXPECT_THAT(parent.ReadControlFile("freezer.self_freezing"),
+              IsPosixErrorOkAndHolds("1\n"));
+
+  Cgroup child = ASSERT_NO_ERRNO_AND_VALUE(parent.CreateChild("child"));
+  EXPECT_THAT(child.ReadControlFile("freezer.state"),
+              IsPosixErrorOkAndHolds("FROZEN\n"));
+  EXPECT_THAT(child.ReadControlFile("freezer.self_freezing"),
+              IsPosixErrorOkAndHolds("0\n"));
+  EXPECT_THAT(child.ReadControlFile("freezer.parent_freezing"),
+              IsPosixErrorOkAndHolds("1\n"));
+
+  ASSERT_NO_ERRNO(parent.WriteControlFile("freezer.state", "THAWED"));
+  EXPECT_THAT(parent.ReadControlFile("freezer.state"),
+              IsPosixErrorOkAndHolds("THAWED\n"));
+  EXPECT_THAT(parent.ReadControlFile("freezer.self_freezing"),
+              IsPosixErrorOkAndHolds("0\n"));
+  EXPECT_THAT(child.ReadControlFile("freezer.parent_freezing"),
+              IsPosixErrorOkAndHolds("0\n"));
+  EXPECT_THAT(child.ReadControlFile("freezer.state"),
+              IsPosixErrorOkAndHolds("THAWED\n"));
+
+  EXPECT_THAT(parent.WriteControlFile("freezer.state", "INVALID"),
+              PosixErrorIs(EINVAL, _));
 }
 
 }  // namespace
