@@ -19,8 +19,10 @@ import (
 )
 
 const (
-	pagesFileFDDefaultMaxIOBytes  = 256 << 10
-	pagesFileFDDefaultMaxParallel = 128
+	// Keep 32 MiB in flight without making hundreds of readers contend on the
+	// destination MemoryFile's shmem page-cache lock during restore.
+	pagesFileFDDefaultMaxIOBytes  = 4 << 20
+	pagesFileFDDefaultMaxParallel = 8
 )
 
 // NewPagesFileFDReader returns a FDReader that reads a pages file from the
