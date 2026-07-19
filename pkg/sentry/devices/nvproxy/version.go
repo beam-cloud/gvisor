@@ -1254,6 +1254,41 @@ func SupportedDrivers() []nvconf.DriverVersion {
 	return ret
 }
 
+// ResolveDriverABI returns the registered ABI to use for driverVersion. When
+// unsupported drivers are allowed, an unregistered patch release may use the
+// newest known ABI from the same driver branch that is not newer than it.
+func ResolveDriverABI(driverVersion nvconf.DriverVersion, allowUnsupported bool) (nvconf.DriverVersion, bool, error) {
+	Init()
+	if abi, ok := abis[driverVersion]; ok {
+		if abi.supported || allowUnsupported {
+			return driverVersion, true, nil
+		}
+		return nvconf.DriverVersion{}, false, fmt.Errorf("NVIDIA driver version %s is registered but not officially supported", driverVersion)
+	}
+	if !allowUnsupported {
+		return nvconf.DriverVersion{}, false, fmt.Errorf("NVIDIA driver version %s has no exact registered nvproxy ABI", driverVersion)
+	}
+
+	var compatible nvconf.DriverVersion
+	found := false
+	for version := range abis {
+		if version.Major() != driverVersion.Major() {
+			continue
+		}
+		if version.IsGreaterThan(driverVersion) && !version.Equals(driverVersion) {
+			continue
+		}
+		if !found || version.IsGreaterThan(compatible) {
+			compatible = version
+			found = true
+		}
+	}
+	if !found {
+		return nvconf.DriverVersion{}, false, fmt.Errorf("NVIDIA driver version %s has no compatible registered nvproxy ABI in driver branch %d", driverVersion, driverVersion.Major())
+	}
+	return compatible, false, nil
+}
+
 // ExpectedDriverChecksum returns the expected checksum for a given version.
 // Precondition: Init() must have been called.
 func ExpectedDriverChecksum(version nvconf.DriverVersion) (Checksums, bool) {
