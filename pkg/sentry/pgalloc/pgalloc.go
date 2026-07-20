@@ -1467,6 +1467,31 @@ func (f *MemoryFile) MapInternal(fr memmap.FileRange, at hostarch.AccessType) (s
 	return safemem.BlockSeqFromSlice(blocks), nil
 }
 
+// AdviseHugepageRanges marks ranges in f as eligible for transparent huge
+// pages without faulting them in.
+func (f *MemoryFile) AdviseHugepageRanges(ranges []memmap.FileRange) error {
+	normalized, err := normalizeFileRanges(ranges)
+	if err != nil {
+		return err
+	}
+	f.adviseHugepageRanges(normalized)
+	return nil
+}
+
+func (f *MemoryFile) adviseHugepageRanges(ranges []memmap.FileRange) {
+	warned := false
+	for _, fr := range ranges {
+		f.forEachMappingSlice(fr, func(bs []byte) {
+			block := safemem.BlockFromSafeSlice(bs)
+			_, _, errno := unix.Syscall(unix.SYS_MADVISE, block.Addr(), uintptr(block.Len()), unix.MADV_HUGEPAGE)
+			if errno != 0 && !warned {
+				log.Warningf("madvise(MADV_HUGEPAGE) failed while preparing prefault ranges: %v", errno)
+				warned = true
+			}
+		})
+	}
+}
+
 // PrefaultRanges installs writable host page table entries for ranges in f.
 // This is useful before a host device pins restored application memory,
 // including sparse ranges omitted from the checkpoint because they contained
@@ -1476,6 +1501,7 @@ func (f *MemoryFile) PrefaultRanges(ranges []memmap.FileRange) (uint64, bool, er
 	if err != nil {
 		return 0, false, err
 	}
+	f.adviseHugepageRanges(normalized)
 
 	var blocks []safemem.Block
 	for _, fr := range normalized {

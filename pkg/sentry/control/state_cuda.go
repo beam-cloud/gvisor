@@ -173,11 +173,6 @@ func resumeCuda(k *kernel.Kernel, timeline *timing.Timeline, restored bool) erro
 }
 
 func prefaultCudaMemory(k *kernel.Kernel, cudaProcs []*kernel.ThreadGroup, timeline *timing.Timeline) error {
-	if err := k.MemoryFile().AwaitLoadAll(); err != nil {
-		return fmt.Errorf("failed to load restored CUDA memory: %w", err)
-	}
-	timeline.Reached("cuda memory loaded")
-
 	var ranges []memmap.FileRange
 	for _, tg := range cudaProcs {
 		leader := tg.Leader()
@@ -190,6 +185,16 @@ func prefaultCudaMemory(k *kernel.Kernel, cudaProcs []*kernel.ThreadGroup, timel
 		}
 		ranges = append(ranges, mm.MappedFileRanges(k.MemoryFile())...)
 	}
+	// Advise before page loading completes so restored pages are faulted into
+	// huge-page-eligible mappings. This does not populate memory concurrently.
+	if err := k.MemoryFile().AdviseHugepageRanges(ranges); err != nil {
+		return fmt.Errorf("failed to advise restored CUDA memory for huge pages: %w", err)
+	}
+	if err := k.MemoryFile().AwaitLoadAll(); err != nil {
+		return fmt.Errorf("failed to load restored CUDA memory: %w", err)
+	}
+	timeline.Reached("cuda memory loaded")
+
 	start := time.Now()
 	prefaulted, complete, err := k.MemoryFile().PrefaultRanges(ranges)
 	if err != nil {
