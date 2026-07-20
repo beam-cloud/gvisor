@@ -32,6 +32,80 @@ func TestInit(t *testing.T) {
 	}
 }
 
+func TestResolveDriverABI(t *testing.T) {
+	tests := []struct {
+		name             string
+		driverVersion    nvconf.DriverVersion
+		allowUnsupported bool
+		want             nvconf.DriverVersion
+		wantExact        bool
+		wantErr          bool
+	}{
+		{
+			name:          "supported exact match",
+			driverVersion: nvconf.NewDriverVersion(590, 48, 1),
+			want:          nvconf.NewDriverVersion(590, 48, 1),
+			wantExact:     true,
+		},
+		{
+			name:             "unsupported exact match allowed",
+			driverVersion:    nvconf.NewDriverVersion(595, 71, 5),
+			allowUnsupported: true,
+			want:             nvconf.NewDriverVersion(595, 71, 5),
+			wantExact:        true,
+		},
+		{
+			name:          "unsupported exact match rejected",
+			driverVersion: nvconf.NewDriverVersion(595, 71, 5),
+			wantErr:       true,
+		},
+		{
+			name:             "newer patch uses same branch ABI",
+			driverVersion:    nvconf.NewDriverVersion(595, 84, 0),
+			allowUnsupported: true,
+			want:             nvconf.NewDriverVersion(595, 71, 5),
+		},
+		{
+			name:             "newer patch uses latest transition",
+			driverVersion:    nvconf.NewDriverVersion(570, 200, 0),
+			allowUnsupported: true,
+			want:             nvconf.NewDriverVersion(570, 195, 3),
+		},
+		{
+			name:             "older patch does not use newer ABI",
+			driverVersion:    nvconf.NewDriverVersion(595, 60, 0),
+			allowUnsupported: true,
+			wantErr:          true,
+		},
+		{
+			name:             "unknown branch rejected",
+			driverVersion:    nvconf.NewDriverVersion(600, 1, 0),
+			allowUnsupported: true,
+			wantErr:          true,
+		},
+		{
+			name:          "fallback requires opt in",
+			driverVersion: nvconf.NewDriverVersion(595, 84, 0),
+			wantErr:       true,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, exact, err := ResolveDriverABI(test.driverVersion, test.allowUnsupported)
+			if (err != nil) != test.wantErr {
+				t.Fatalf("ResolveDriverABI() error = %v, wantErr %t", err, test.wantErr)
+			}
+			if test.wantErr {
+				return
+			}
+			if !got.Equals(test.want) || exact != test.wantExact {
+				t.Fatalf("ResolveDriverABI() = (%s, %t), want (%s, %t)", got, exact, test.want, test.wantExact)
+			}
+		})
+	}
+}
+
 // TestAllSupportedHashesPresent tests that all the supported versions in nvproxy have hash entries
 // in this tool's map. If you're here because of failures run:
 // `make sudo TARGETS=//tools/gpu:main ARGS="validate_checksum"`and fix mismatches.

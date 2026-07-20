@@ -2278,16 +2278,33 @@ func deviceFileForPlatform(name, devicePath string) (*fd.FD, error) {
 // getNvproxyDriverVersion returns the NVIDIA driver ABI version to use by
 // nvproxy.
 func getNvproxyDriverVersion(conf *config.Config) (string, error) {
+	var versionString string
 	switch conf.NVProxyDriverVersion {
 	case "":
-		return nvproxy.HostDriverVersion()
+		var err error
+		versionString, err = nvproxy.HostDriverVersion()
+		if err != nil {
+			return "", err
+		}
 	case "latest":
 		nvproxy.Init()
-		return nvproxy.LatestDriver().String(), nil
+		versionString = nvproxy.LatestDriver().String()
 	default:
-		version, err := nvconf.DriverVersionFrom(conf.NVProxyDriverVersion)
-		return version.String(), err
+		versionString = conf.NVProxyDriverVersion
 	}
+
+	driverVersion, err := nvconf.DriverVersionFrom(versionString)
+	if err != nil {
+		return "", err
+	}
+	resolvedVersion, exact, err := nvproxy.ResolveDriverABI(driverVersion, conf.NVProxyAllowUnsupportedDriver)
+	if err != nil {
+		return "", err
+	}
+	if !exact {
+		log.Warningf("NVIDIA driver %s has no exact nvproxy ABI; using compatible ABI %s", driverVersion, resolvedVersion)
+	}
+	return resolvedVersion.String(), nil
 }
 
 // checkBinaryPermissions verifies that the required binary bits are set on
