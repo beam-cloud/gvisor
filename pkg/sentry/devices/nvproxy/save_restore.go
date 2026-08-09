@@ -18,6 +18,8 @@ import (
 	goContext "context"
 	"fmt"
 	"path/filepath"
+	"sort"
+	"strings"
 
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/abi/nvgpu"
@@ -141,6 +143,26 @@ type DeviceRemapping struct {
 	NewDeviceByOld            map[*DeviceRemapID]*DeviceRemapID
 	OldDeviceByMinor          map[uint32]*DeviceRemapID
 	OldDeviceByDeviceInstance map[uint32]*DeviceRemapID
+}
+
+// CUDADeviceMap returns the complete old-to-new UUID mapping expected by
+// cuda-checkpoint's --device-map option. CUDA retains physical device UUIDs in
+// its checkpoint even though nvproxy remaps the restored device handles, so a
+// restore onto a different allocated GPU must pass the same remapping to both.
+func CUDADeviceMap(remapping *DeviceRemapping) (string, error) {
+	if remapping == nil || len(remapping.NewDeviceByOld) == 0 {
+		return "", nil
+	}
+
+	pairs := make([]string, 0, len(remapping.NewDeviceByOld))
+	for oldID, newID := range remapping.NewDeviceByOld {
+		if oldID == nil || newID == nil || oldID.UUID == "" || newID.UUID == "" {
+			return "", fmt.Errorf("can't build CUDA device map with missing GPU UUID: %v => %v", oldID, newID)
+		}
+		pairs = append(pairs, oldID.UUID+"="+newID.UUID)
+	}
+	sort.Strings(pairs)
+	return strings.Join(pairs, ","), nil
 }
 
 // MakeDeviceRemapping produces a DeviceRemapping. It takes ownership of oldIDs

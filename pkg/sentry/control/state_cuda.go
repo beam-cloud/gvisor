@@ -46,7 +46,20 @@ const (
 	// cudaCheckpointSequentialKey is the checkpoint state key for whether to run
 	// cuda-checkpoint sequentially.
 	cudaCheckpointSequentialKey = "cuda-checkpoint-sequential"
+
+	// cudaRestoreDeviceMapKey is populated after state load from nvproxy's
+	// old-to-new physical GPU mapping. It is deliberately ephemeral: it belongs
+	// to this restore attempt, not to the next checkpoint.
+	cudaRestoreDeviceMapKey = "cuda-restore-device-map"
 )
+
+// SetCudaRestoreDeviceMap configures the physical GPU UUID remapping for the
+// CUDA resume phase of a restored kernel.
+func SetCudaRestoreDeviceMap(k *kernel.Kernel, deviceMap string) {
+	if deviceMap != "" {
+		k.AddStateToCheckpoint(cudaRestoreDeviceMapKey, deviceMap)
+	}
+}
 
 func preSaveCuda(k *kernel.Kernel, o *state.SaveOpts) error {
 	if o.CudaCheckpointPath == "" {
@@ -73,7 +86,7 @@ func preSaveCuda(k *kernel.Kernel, o *state.SaveOpts) error {
 	for _, tg := range cudaProcs {
 		tg.SigsegvLock()
 	}
-	err := toggleCudaProcs(sctx, k, o.CudaCheckpointPath, cudaProcs, nil, o.CudaCheckpointSequential)
+	err := toggleCudaProcs(sctx, k, o.CudaCheckpointPath, cudaProcs, nil, o.CudaCheckpointSequential, "")
 	if wasPaused {
 		k.Pause()
 	}
@@ -150,6 +163,12 @@ func postResumeCuda(k *kernel.Kernel, timeline *timing.Timeline) error {
 }
 
 func resumeCuda(k *kernel.Kernel, timeline *timing.Timeline, restored bool) error {
+	restoreDeviceMap := ""
+	if restored {
+		if value := k.PopCheckpointState(cudaRestoreDeviceMapKey); value != nil {
+			restoreDeviceMap, _ = value.(string)
+		}
+	}
 	cudaCheckpointPathVal := k.PopCheckpointState(cudaCheckpointPathKey)
 	if cudaCheckpointPathVal == nil {
 		return nil
@@ -163,8 +182,7 @@ func resumeCuda(k *kernel.Kernel, timeline *timing.Timeline, restored bool) erro
 		}
 	}
 	timeline.Reached("starting cuda-ckpt")
-	// FIXME: b/460451448 - pass --device-map to cuda-checkpoint if accepted
-	err := toggleCudaProcs(k.SupervisorContext(), k, cudaCheckpointPath, cudaProcs, timeline, cudaCheckpointSequential)
+	err := toggleCudaProcs(k.SupervisorContext(), k, cudaCheckpointPath, cudaProcs, timeline, cudaCheckpointSequential, restoreDeviceMap)
 	// FIXME: b/456299722
 	for _, tg := range cudaProcs {
 		tg.SigsegvUnlock()
@@ -219,7 +237,7 @@ type checkpointProc struct {
 // containing the running cuda-checkpoint process and a cleanup function which
 // must be called to release resources. If cudaProc has exited, it returns
 // (checkpointProc.tg == nil, err == nil).
-func invokeCudaCheckpoint(sctx context.Context, k *kernel.Kernel, proc *Proc, cudaCheckpointPath string, cudaProc *kernel.ThreadGroup, opFlag string, nullFD *vfs.FileDescription) (checkpointProc, func(), error) {
+func invokeCudaCheckpoint(sctx context.Context, k *kernel.Kernel, proc *Proc, cudaCheckpointPath string, cudaProc *kernel.ThreadGroup, operationArgs []string, nullFD *vfs.FileDescription) (checkpointProc, func(), error) {
 	pid := cudaProc.ID()
 	leader := cudaProc.Leader()
 	contID := leader.ContainerID()
@@ -237,14 +255,11 @@ func invokeCudaCheckpoint(sctx context.Context, k *kernel.Kernel, proc *Proc, cu
 	cu.Add(func() {
 		mntns.DecRef(ctx)
 	})
+	argv := append([]string{"cuda-checkpoint"}, operationArgs...)
+	argv = append(argv, "--pid", strconv.FormatInt(int64(pid), 10))
 	args := &ExecArgs{
-		Filename: cudaCheckpointPath,
-		Argv: []string{
-			"cuda-checkpoint",
-			opFlag,
-			"--pid",
-			strconv.FormatInt(int64(pid), 10),
-		},
+		Filename:       cudaCheckpointPath,
+		Argv:           argv,
 		ContainerID:    contID,
 		MountNamespace: mntns,
 		PIDNamespace:   leader.PIDNamespace(),
@@ -255,7 +270,7 @@ func invokeCudaCheckpoint(sctx context.Context, k *kernel.Kernel, proc *Proc, cu
 
 	// Provide standard streams to cuda-checkpoint. Use /dev/null as stdin
 	// and direct cuda-checkpoint's stdout/stderr to a pipe.
-	ckptDesc := fmt.Sprintf("cuda-checkpoint %s for PID %d in container %q", opFlag, pid, contID)
+	ckptDesc := fmt.Sprintf("cuda-checkpoint %s for PID %d in container %q", strings.Join(operationArgs, " "), pid, contID)
 	args.FDTable = k.NewFDTable()
 	cu.Add(func() {
 		args.FDTable.DecRef(ctx)
@@ -328,7 +343,7 @@ func filterCudaProcsUsingGetState(sctx context.Context, k *kernel.Kernel, cudaCh
 	proc := &Proc{Kernel: k}
 	ckptProcs := make(map[*kernel.ThreadGroup]checkpointProc)
 	for _, cudaProc := range cudaProcs {
-		ckptProc, cleanup, err := invokeCudaCheckpoint(sctx, k, proc, cudaCheckpointPath, cudaProc, "--get-state", nullFD)
+		ckptProc, cleanup, err := invokeCudaCheckpoint(sctx, k, proc, cudaCheckpointPath, cudaProc, []string{"--get-state"}, nullFD)
 		if err != nil {
 			log.Warningf("Failed to get state for PID %d: %v", cudaProc.ID(), err)
 			continue
@@ -364,7 +379,7 @@ func filterCudaProcsUsingGetState(sctx context.Context, k *kernel.Kernel, cudaCh
 	return res
 }
 
-func toggleCudaProcs(sctx context.Context, k *kernel.Kernel, cudaCheckpointPath string, cudaProcs []*kernel.ThreadGroup, timeline *timing.Timeline, sequential bool) error {
+func toggleCudaProcs(sctx context.Context, k *kernel.Kernel, cudaCheckpointPath string, cudaProcs []*kernel.ThreadGroup, timeline *timing.Timeline, sequential bool, restoreDeviceMap string) error {
 	start := time.Now()
 
 	// Open /dev/null once for the stdin of all cuda-checkpoint processes.
@@ -405,7 +420,11 @@ func toggleCudaProcs(sctx context.Context, k *kernel.Kernel, cudaCheckpointPath 
 		} else {
 			ckptTiming = ckptTimings[i]
 		}
-		ckptProc, cleanup, err := invokeCudaCheckpoint(sctx, k, proc, cudaCheckpointPath, cudaProc, "--toggle", nullFD)
+		operationArgs := []string{"--toggle"}
+		if restoreDeviceMap != "" {
+			operationArgs = []string{"--action", "restore", "--device-map", restoreDeviceMap}
+		}
+		ckptProc, cleanup, err := invokeCudaCheckpoint(sctx, k, proc, cudaCheckpointPath, cudaProc, operationArgs, nullFD)
 		if err != nil {
 			ckptTiming.Reached("invoke error")
 			errs = append(errs, err)
@@ -460,7 +479,7 @@ func toggleCudaProcs(sctx context.Context, k *kernel.Kernel, cudaCheckpointPath 
 		// This is best-effort.
 		undoCkptProcs := make(map[string]checkpointProc)
 		for cudaProc, ckptProc := range ckptProcs {
-			undoCkptProc, cleanup, err := invokeCudaCheckpoint(sctx, k, proc, cudaCheckpointPath, cudaProc, "--toggle", nullFD)
+			undoCkptProc, cleanup, err := invokeCudaCheckpoint(sctx, k, proc, cudaCheckpointPath, cudaProc, []string{"--toggle"}, nullFD)
 			if err != nil {
 				log.Warningf("Failed to invoke cuda-checkpoint to undo %q: %v", ckptProc.desc, err)
 				continue

@@ -131,13 +131,9 @@ func getNvproxyDeviceRemapIDs(ctx context.Context, k *kernel.Kernel, specs map[s
 	// with which it was saved gets a no-op remapping, both of which are
 	// intuitively desirable.
 	//
-	// - When device hardware is identical and
-	// CUDA_VISIBLE_DEVICES/CUDA_DEVICE_ORDER are unspecified, CUDA appears to
-	// order devices by device minor number, GPU ID, or something else that
-	// correlates with these (possibly PCI info; not device instance and not
-	// UUID), so sorting device sets by minor number during both save and
-	// restore is believed to be most likely to produce the same remapping as
-	// cuda-checkpoint without the --device-map flag.
+	// - cuda-checkpoint and nvproxy must use the same old-to-new association.
+	// Sorting both device sets by minor number makes that association stable;
+	// the CUDA restore path passes its UUID form through --device-map.
 	slices.SortFunc(ids, func(a, b nvproxy.DeviceRemapID) int {
 		return cmp.Compare(a.Minor, b.Minor)
 	})

@@ -32,6 +32,30 @@ func TestInit(t *testing.T) {
 	}
 }
 
+func TestCUDADeviceMap(t *testing.T) {
+	old0 := &DeviceRemapID{UUID: "GPU-old-b"}
+	old1 := &DeviceRemapID{UUID: "GPU-old-a"}
+	got, err := CUDADeviceMap(&DeviceRemapping{NewDeviceByOld: map[*DeviceRemapID]*DeviceRemapID{
+		old0: {UUID: "GPU-new-b"},
+		old1: {UUID: "GPU-new-a"},
+	}})
+	if err != nil {
+		t.Fatalf("CUDADeviceMap() failed: %v", err)
+	}
+	if want := "GPU-old-a=GPU-new-a,GPU-old-b=GPU-new-b"; got != want {
+		t.Fatalf("CUDADeviceMap() = %q, want %q", got, want)
+	}
+}
+
+func TestCUDADeviceMapRejectsMissingUUID(t *testing.T) {
+	_, err := CUDADeviceMap(&DeviceRemapping{NewDeviceByOld: map[*DeviceRemapID]*DeviceRemapID{
+		{UUID: "GPU-old"}: {},
+	}})
+	if err == nil {
+		t.Fatal("CUDADeviceMap() succeeded with a missing restored UUID")
+	}
+}
+
 func TestResolveDriverABI(t *testing.T) {
 	tests := []struct {
 		name             string
