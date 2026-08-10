@@ -15,12 +15,35 @@
 package control
 
 import (
+	"reflect"
 	"testing"
 
 	"gvisor.dev/gvisor/pkg/log"
 	"gvisor.dev/gvisor/pkg/sentry/ktime"
 	"gvisor.dev/gvisor/pkg/sentry/usage"
 )
+
+func TestCudaCheckpointEnv(t *testing.T) {
+	env := []string{
+		"PATH=/usr/bin",
+		"CUDA_VISIBLE_DEVICES=GPU-old",
+		"CUDA_DEVICE_ORDER=PCI_BUS_ID",
+		"NVIDIA_VISIBLE_DEVICES=GPU-new",
+	}
+	want := []string{"PATH=/usr/bin", "NVIDIA_VISIBLE_DEVICES=GPU-new"}
+	got := cudaCheckpointEnv(env, []string{"--action", "restore", "--device-map", "GPU-old=GPU-new"})
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("cudaCheckpointEnv() = %v, want %v", got, want)
+	}
+	if env[1] != "CUDA_VISIBLE_DEVICES=GPU-old" {
+		t.Fatalf("cudaCheckpointEnv() modified its input: %v", env)
+	}
+
+	got = cudaCheckpointEnv(env, []string{"--toggle"})
+	if !reflect.DeepEqual(got, env) {
+		t.Fatalf("cudaCheckpointEnv() without a device map = %v, want %v", got, env)
+	}
+}
 
 func init() {
 	log.SetLevel(log.Debug)

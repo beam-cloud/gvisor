@@ -266,7 +266,7 @@ func invokeCudaCheckpoint(sctx context.Context, k *kernel.Kernel, proc *Proc, cu
 	}
 	// Provision environment variables from leader's container spec.
 	contName := k.ContainerName(contID)
-	args.Envv = k.Saver().SpecEnviron(contName)
+	args.Envv = cudaCheckpointEnv(k.Saver().SpecEnviron(contName), operationArgs)
 
 	// Provide standard streams to cuda-checkpoint. Use /dev/null as stdin
 	// and direct cuda-checkpoint's stdout/stderr to a pipe.
@@ -305,6 +305,28 @@ func invokeCudaCheckpoint(sctx context.Context, k *kernel.Kernel, proc *Proc, cu
 		tg:   ckptTG,
 		out:  ckptOut,
 	}, cu.Release(), nil
+}
+
+func cudaCheckpointEnv(env, operationArgs []string) []string {
+	hasDeviceMap := false
+	for _, arg := range operationArgs {
+		if arg == "--device-map" {
+			hasDeviceMap = true
+			break
+		}
+	}
+	if !hasDeviceMap {
+		return env
+	}
+
+	filtered := make([]string, 0, len(env))
+	for _, entry := range env {
+		name, _, _ := strings.Cut(entry, "=")
+		if name != "CUDA_VISIBLE_DEVICES" && name != "CUDA_DEVICE_ORDER" {
+			filtered = append(filtered, entry)
+		}
+	}
+	return filtered
 }
 
 func filterCudaProcsUsingThreadName(sctx context.Context, cudaProcs []*kernel.ThreadGroup) []*kernel.ThreadGroup {
