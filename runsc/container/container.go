@@ -34,6 +34,7 @@ import (
 	specs "github.com/opencontainers/runtime-spec/specs-go"
 	"golang.org/x/sys/unix"
 	"gvisor.dev/gvisor/pkg/abi/linux"
+	"gvisor.dev/gvisor/pkg/abi/nvgpu"
 	"gvisor.dev/gvisor/pkg/cleanup"
 	"gvisor.dev/gvisor/pkg/log"
 	"gvisor.dev/gvisor/pkg/sentry/control"
@@ -55,6 +56,8 @@ import (
 )
 
 const cgroupParentAnnotation = "dev.gvisor.spec.cgroup-parent"
+
+var nvidiaRegularDeviceBasenameRegex = regexp.MustCompile(`^nvidia([0-9]+)$`)
 
 // validateID validates the container id.
 func validateID(id string) error {
@@ -2153,6 +2156,74 @@ func nvproxyLoadKernelModules() {
 	}
 }
 
+// removeStaleNvidiaRegularDeviceFiles removes NVIDIA regular-device entries
+// left in the container root by a previous nvidia-container-cli invocation.
+// These entries are implementation artifacts, and retaining them across a
+// filesystem restore makes the device gofer expose both the old and newly
+// assigned GPU minors.
+func removeStaleNvidiaRegularDeviceFiles(rootPath string) error {
+	rootFD, err := unix.Open(rootPath, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		return fmt.Errorf("opening container root: %w", err)
+	}
+	defer unix.Close(rootFD)
+
+	devFD, err := unix.Openat(rootFD, "dev", unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC|unix.O_NOFOLLOW, 0)
+	if err != nil {
+		if errors.Is(err, unix.ENOENT) {
+			return nil
+		}
+		return fmt.Errorf("opening container /dev: %w", err)
+	}
+	devDir := os.NewFile(uintptr(devFD), "container /dev")
+	defer devDir.Close()
+
+	entries, err := devDir.ReadDir(-1)
+	if err != nil {
+		return fmt.Errorf("reading container /dev: %w", err)
+	}
+	for _, entry := range entries {
+		match := nvidiaRegularDeviceBasenameRegex.FindStringSubmatch(entry.Name())
+		if match == nil {
+			continue
+		}
+		minor, err := strconv.ParseUint(match[1], 10, 32)
+		if err != nil || minor > nvgpu.NV_MINOR_DEVICE_NUMBER_REGULAR_MAX {
+			return fmt.Errorf("invalid NVIDIA regular device name /dev/%s", entry.Name())
+		}
+		var stat unix.Stat_t
+		if err := unix.Fstatat(devFD, entry.Name(), &stat, unix.AT_SYMLINK_NOFOLLOW); err != nil {
+			if errors.Is(err, unix.ENOENT) {
+				continue
+			}
+			return fmt.Errorf("statting stale container device /dev/%s: %w", entry.Name(), err)
+		}
+		switch stat.Mode & unix.S_IFMT {
+		case unix.S_IFREG:
+			// nvidia-container-cli uses empty regular files as bind-mount
+			// placeholders. Filesystem checkpoints retain these placeholders after
+			// the device mount itself is gone.
+			if stat.Size != 0 {
+				return fmt.Errorf("refusing to remove non-empty container device placeholder /dev/%s", entry.Name())
+			}
+		case unix.S_IFCHR:
+			if unix.Major(uint64(stat.Rdev)) != nvgpu.NV_MAJOR_DEVICE_NUMBER || unix.Minor(uint64(stat.Rdev)) != uint32(minor) {
+				return fmt.Errorf("refusing to remove mismatched container device /dev/%s with rdev (%d, %d)", entry.Name(), unix.Major(uint64(stat.Rdev)), unix.Minor(uint64(stat.Rdev)))
+			}
+		default:
+			return fmt.Errorf("refusing to remove unexpected container device entry /dev/%s with mode %#o", entry.Name(), stat.Mode)
+		}
+		// unlinkat operates on the opened /dev directory and does not follow the
+		// final component, so this cannot escape the container root through a
+		// symlink or a concurrent rename.
+		if err := unix.Unlinkat(devFD, entry.Name(), 0); err != nil {
+			return fmt.Errorf("removing stale container device /dev/%s: %w", entry.Name(), err)
+		}
+		log.Debugf("Removed stale container device /dev/%s", entry.Name())
+	}
+	return nil
+}
+
 // nvproxySetup runs `nvidia-container-cli configure` with gofer's PID. This
 // sets up the container filesystem with bind mounts that allow it to use
 // NVIDIA devices and libraries.
@@ -2225,6 +2296,9 @@ func nvproxySetup(spec *specs.Spec, conf *config.Config, goferPid int) error {
 	argv = append(argv, driverCaps.NVIDIAFlags()...)
 	// Add rootfs path as the final argument.
 	argv = append(argv, spec.Root.Path)
+	if err := removeStaleNvidiaRegularDeviceFiles(spec.Root.Path); err != nil {
+		return fmt.Errorf("failed to remove stale NVIDIA regular device files: %w", err)
+	}
 	log.Debugf("Executing %q", argv)
 	var stdout, stderr strings.Builder
 	cmd := exec.Cmd{

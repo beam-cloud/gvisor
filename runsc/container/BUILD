@@ -19,6 +19,7 @@ go_library(
     ],
     deps = [
         "//pkg/abi/linux",
+        "//pkg/abi/nvgpu",
         "//pkg/cleanup",
         "//pkg/log",
         "//pkg/sentry/control",
@@ -118,4 +119,11 @@ go_test(
         "//runsc/sandbox",
         "@org_golang_google_protobuf//proto:go_default_library",
     ],
+)
+
+go_test(
+    name = "nvproxy_test",
+    size = "small",
+    srcs = ["nvproxy_test.go"],
+    library = ":container",
 )

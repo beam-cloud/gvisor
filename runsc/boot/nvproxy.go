@@ -179,20 +179,16 @@ func collectContainerNvidiaRegularDevices(ctx context.Context, spec *specs.Spec,
 	return gotAny, nil
 }
 
-func (l *Loader) createRemappedNvproxyDeviceFiles(ctx context.Context) {
+func (l *Loader) createRemappedNvproxyDeviceFiles(ctx context.Context) error {
 	dr := nvproxy.DeviceRemappingFromContext(ctx)
 	if dr == nil {
-		return
+		return nil
 	}
-	newMinors := make(map[uint32]struct{})
-	for _, newID := range dr.NewDeviceByOld {
-		newMinors[newID.Minor] = struct{}{}
-	}
-	for oldMinor := range dr.OldDeviceByMinor {
-		delete(newMinors, oldMinor)
-	}
-	if len(newMinors) == 0 {
-		return
+	foundOldMinors := make(map[uint32]bool)
+	for oldMinor, oldID := range dr.OldDeviceByMinor {
+		if newID, ok := dr.NewDeviceByOld[oldID]; !ok || newID == nil {
+			return fmt.Errorf("invalid nvproxy device remapping for old minor %d", oldMinor)
+		}
 	}
 	vfsObj := l.k.VFS()
 	mnts := vfsObj.GetAllMounts(ctx)
@@ -202,12 +198,22 @@ func (l *Loader) createRemappedNvproxyDeviceFiles(ctx context.Context) {
 		}
 	}()
 	creds := auth.CredentialsFromContext(ctx)
+	oldMinors := slices.Sorted(maps.Keys(dr.OldDeviceByMinor))
+	type devMountSources struct {
+		mnt       *vfs.Mount
+		oldMinors []uint32
+	}
+	var sourcesByMount []devMountSources
+	// Discover every restored source before creating anything. Otherwise a
+	// target created for one mapping could be mistaken for another mapping's
+	// restored source (for example, 0=>1 followed by 1=>2).
 	for _, mnt := range mnts {
 		if _, ok := mnt.Filesystem().FilesystemType().(dev.FilesystemType); !ok {
 			continue
 		}
 		rootVD := vfs.MakeVirtualDentry(mnt, mnt.Root())
-		for oldMinor, oldID := range dr.OldDeviceByMinor {
+		var sources []uint32
+		for _, oldMinor := range oldMinors {
 			oldBasename := fmt.Sprintf("nvidia%d", oldMinor)
 			stat, err := vfsObj.StatAt(ctx, creds, &vfs.PathOperation{
 				Root:  rootVD,
@@ -217,15 +223,36 @@ func (l *Loader) createRemappedNvproxyDeviceFiles(ctx context.Context) {
 				Mask: linux.STATX_TYPE,
 			})
 			if err != nil {
-				if err != linuxerr.ENOENT {
-					log.Warningf("Failed to stat old device file %s: %v", oldBasename, err)
+				if !linuxerr.Equals(linuxerr.ENOENT, err) {
+					return fmt.Errorf("statting restored NVIDIA device file %s: %w", oldBasename, err)
 				}
 				continue
 			}
 			if ftype := stat.Mode & linux.S_IFMT; ftype != linux.S_IFCHR || stat.RdevMajor != nvgpu.NV_MAJOR_DEVICE_NUMBER || stat.RdevMinor != oldMinor {
-				log.Infof("Not creating remapped device file for %s, which has type %v and rdev numbers (%d, %d)", oldBasename, ftype, stat.RdevMajor, stat.RdevMinor)
+				log.Infof("Not using restored device file %s for nvproxy remapping: type %v, rdev (%d, %d)", oldBasename, ftype, stat.RdevMajor, stat.RdevMinor)
 				continue
 			}
+			foundOldMinors[oldMinor] = true
+			sources = append(sources, oldMinor)
+		}
+		if len(sources) != 0 {
+			sourcesByMount = append(sourcesByMount, devMountSources{mnt: mnt, oldMinors: sources})
+		}
+	}
+	var missingOldMinors []uint32
+	for oldMinor := range dr.OldDeviceByMinor {
+		if !foundOldMinors[oldMinor] {
+			missingOldMinors = append(missingOldMinors, oldMinor)
+		}
+	}
+	if len(missingOldMinors) != 0 {
+		slices.Sort(missingOldMinors)
+		return fmt.Errorf("no restored NVIDIA source device file found for old minor(s) %v", missingOldMinors)
+	}
+	for _, mountSources := range sourcesByMount {
+		rootVD := vfs.MakeVirtualDentry(mountSources.mnt, mountSources.mnt.Root())
+		for _, oldMinor := range mountSources.oldMinors {
+			oldID := dr.OldDeviceByMinor[oldMinor]
 			newID := dr.NewDeviceByOld[oldID]
 			newBasename := fmt.Sprintf("nvidia%d", newID.Minor)
 			if err := vfsObj.MknodAt(ctx, creds, &vfs.PathOperation{
@@ -237,12 +264,26 @@ func (l *Loader) createRemappedNvproxyDeviceFiles(ctx context.Context) {
 				DevMajor: nvgpu.NV_MAJOR_DEVICE_NUMBER,
 				DevMinor: newID.Minor,
 			}); err != nil {
-				if err == linuxerr.EEXIST {
+				if linuxerr.Equals(linuxerr.EEXIST, err) {
 					log.Debugf("Remapped device file %s already exists", newBasename)
 				} else {
-					log.Warningf("Failed to create remapped device file %s: %v", newBasename, err)
+					return fmt.Errorf("creating remapped NVIDIA device file %s: %w", newBasename, err)
 				}
+			}
+			newStat, err := vfsObj.StatAt(ctx, creds, &vfs.PathOperation{
+				Root:  rootVD,
+				Start: rootVD,
+				Path:  fspath.Parse(newBasename),
+			}, &vfs.StatOptions{
+				Mask: linux.STATX_TYPE,
+			})
+			if err != nil {
+				return fmt.Errorf("validating remapped NVIDIA device file %s: %w", newBasename, err)
+			}
+			if ftype := newStat.Mode & linux.S_IFMT; ftype != linux.S_IFCHR || newStat.RdevMajor != nvgpu.NV_MAJOR_DEVICE_NUMBER || newStat.RdevMinor != newID.Minor {
+				return fmt.Errorf("remapped NVIDIA device file %s has type %v and rdev (%d, %d), want character device (%d, %d)", newBasename, ftype, newStat.RdevMajor, newStat.RdevMinor, nvgpu.NV_MAJOR_DEVICE_NUMBER, newID.Minor)
 			}
 		}
 	}
+	return nil
 }
