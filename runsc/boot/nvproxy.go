@@ -48,17 +48,17 @@ const (
 )
 
 // setNvproxyDeviceRemapMetadata records the set of accessible GPUs for
-// remapping after restore. This will constrain restore to needing the same
-// number of GPUs or more, so only do this if at least one GPU device file is
-// open, which is indicative of GPU usage.
+// remapping after restore. This is required even when no GPU device file is
+// open: the restored devfs still contains device nodes with saved minor
+// numbers, which may differ from the newly assigned GPUs.
 func (l *Loader) setNvproxyDeviceRemapMetadata(saveOpts *state.SaveOpts) error {
-	if !nvproxy.AnyFrontendDevicesOpen(l.k.VFS()) {
-		return nil
-	}
 	ctx := l.k.SupervisorContext()
 	ids, err := getNvproxyDeviceRemapIDs(ctx, l.k, l.GetContainerSpecs(), l.root.conf)
 	if err != nil {
 		return fmt.Errorf("failed to get nvproxy device IDs: %w", err)
+	}
+	if len(ids) == 0 {
+		return nil
 	}
 	if err := nvproxy.CheckDevicesRemappable(ids); err != nil {
 		return fmt.Errorf("nvproxy device is not remappable: %w", err)
