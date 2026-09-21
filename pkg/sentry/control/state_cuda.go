@@ -530,7 +530,54 @@ func toggleCudaProcs(sctx context.Context, k *kernel.Kernel, cudaCheckpointPath 
 		// Combine all errors and return.
 		return errors.Join(errs...)
 	}
+	if restoreDeviceMap != "" {
+		// Unlike --toggle, --action restore leaves each process in the locked
+		// state, where every CUDA call blocks until an explicit unlock.
+		restored := make([]*kernel.ThreadGroup, 0, len(ckptProcs))
+		for cudaProc := range ckptProcs {
+			restored = append(restored, cudaProc)
+		}
+		if err := unlockCudaProcs(sctx, k, proc, cudaCheckpointPath, restored, nullFD, sequential); err != nil {
+			return err
+		}
+		timeline.Reached("cuda-ckpts unlocked")
+	}
 	log.Infof("cuda-checkpoint on %d processes took [%s]", len(ckptProcs), time.Since(start))
 	timeline.Reached("cuda-ckpts done")
 	return nil
+}
+
+// unlockCudaProcs moves processes that cuda-checkpoint --action restore left
+// locked back to the running state.
+func unlockCudaProcs(sctx context.Context, k *kernel.Kernel, proc *Proc, cudaCheckpointPath string, cudaProcs []*kernel.ThreadGroup, nullFD *vfs.FileDescription, sequential bool) error {
+	unlockProcs := make([]checkpointProc, 0, len(cudaProcs))
+	var errs []error
+	for _, cudaProc := range cudaProcs {
+		unlockProc, cleanup, err := invokeCudaCheckpoint(sctx, k, proc, cudaCheckpointPath, cudaProc, []string{"--action", "unlock"}, nullFD)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if unlockProc.tg == nil {
+			continue
+		}
+		defer cleanup()
+		if sequential {
+			unlockProc.tg.WaitExited()
+		}
+		unlockProcs = append(unlockProcs, unlockProc)
+	}
+	for _, unlockProc := range unlockProcs {
+		if !sequential {
+			unlockProc.tg.WaitExited()
+		}
+		if status := unlockProc.tg.ExitStatus(); status != 0 {
+			if unlockProc.out != nil {
+				errs = append(errs, fmt.Errorf("%q failed with exit status %d; output: %q", unlockProc.desc, status, unlockProc.out.String()))
+			} else {
+				errs = append(errs, fmt.Errorf("%q failed with exit status %d", unlockProc.desc, status))
+			}
+		}
+	}
+	return errors.Join(errs...)
 }
