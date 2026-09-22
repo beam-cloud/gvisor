@@ -1338,6 +1338,15 @@ func (s *Sandbox) createSandboxProcess(conf *config.Config, args *Args, startSyn
 			mem = memLimit
 		}
 	}
+	if args.Spec != nil {
+		if v, ok := args.Spec.Annotations[specutils.AnnotationTotalMemory]; ok {
+			totalMem, err := strconv.ParseUint(v, 10, 64)
+			if err != nil || totalMem == 0 {
+				return fmt.Errorf("invalid %s annotation %q: must be a positive byte count", specutils.AnnotationTotalMemory, v)
+			}
+			mem = totalMem
+		}
+	}
 	cmd.Args = append(cmd.Args, "--total-memory", strconv.FormatUint(mem, 10))
 
 	if args.Attached {

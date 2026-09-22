@@ -64,6 +64,17 @@ const (
 	//	"dev.gvisor.container-name-remap.1": "cont-123=cont"
 	annotationContainerNameRemap = "dev.gvisor.container-name-remap."
 
+	// AnnotationTotalMemory sets the total memory, in bytes, the sandbox
+	// reports to the application through /proc/meminfo, sysinfo(2) and its
+	// cgroupfs. It only changes what is reported; the sandbox's cgroup keeps
+	// enforcing its own limit. This lets a runtime place the sandbox in a
+	// cgroup with headroom for the sentry while the application still sees the
+	// memory it was allocated. Internal, so a restore does not validate it.
+	//
+	// Usage:
+	//	"dev.gvisor.internal.total-memory": "17179869184"
+	AnnotationTotalMemory = "dev.gvisor.internal.total-memory"
+
 	// AnnotationRootfsUpperTar specifies the rootfs upper layer tar path.
 	// In multi-container pods, append the container name to select a specific
 	// container:
