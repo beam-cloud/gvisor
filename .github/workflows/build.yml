@@ -2,6 +2,11 @@ name: CI
 
 "on":
   workflow_dispatch:
+    inputs:
+      checkpoint_version:
+        description: 'Compatible checkpoint commit (12 hex digits; empty uses source revision)'
+        required: false
+        type: string
   push:
     branches:
       - "*"
@@ -25,9 +30,12 @@ jobs:
       uses: actions/checkout@v5
 
     - name: build
+      env:
+        CHECKPOINT_VERSION: ${{ inputs.checkpoint_version }}
       run: |
           mkdir -p bin
-          make copy TARGETS=runsc DESTINATION=bin/
+          [[ -z "$CHECKPOINT_VERSION" || "$CHECKPOINT_VERSION" =~ ^[0-9a-f]{12}$ ]]
+          make copy TARGETS=runsc DESTINATION=bin/ BAZEL_OPTIONS="--workspace_status_command='tools/workspace_status.sh $CHECKPOINT_VERSION'"
 
     - name: Upload runsc
       uses: actions/upload-artifact@v4
