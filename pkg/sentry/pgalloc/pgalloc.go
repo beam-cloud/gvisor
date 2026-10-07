@@ -1479,6 +1479,9 @@ func (f *MemoryFile) AdviseHugepageRanges(ranges []memmap.FileRange) error {
 }
 
 func (f *MemoryFile) adviseHugepageRanges(ranges []memmap.FileRange) {
+	if !f.opts.ExpectHugepages {
+		return
+	}
 	warned := false
 	for _, fr := range ranges {
 		f.forEachMappingSlice(fr, func(bs []byte) {
