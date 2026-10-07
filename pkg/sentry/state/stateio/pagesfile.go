@@ -21,6 +21,9 @@ import (
 const (
 	pagesFileFDDefaultMaxIOBytes  = 256 << 10
 	pagesFileFDDefaultMaxParallel = 128
+	// Keep 32 MiB in flight with fewer threads faulting restored shmem pages.
+	pagesFileFDDefaultMaxReadBytes    = 4 << 20
+	pagesFileFDDefaultMaxReadParallel = 8
 )
 
 // NewPagesFileFDReader returns a FDReader that reads a pages file from the
@@ -39,7 +42,7 @@ func NewPagesFileFDReader(fd int32, maxReadBytes uint64, maxParallel int) *FDRea
 // the given host file descriptor, using defaults for MaxReadBytes and
 // MaxParallel. It takes ownership of the file descriptor.
 func NewPagesFileFDReaderDefault(fd int32) *FDReader {
-	return NewPagesFileFDReader(fd, pagesFileFDDefaultMaxIOBytes, pagesFileFDDefaultMaxParallel)
+	return NewPagesFileFDReader(fd, pagesFileFDDefaultMaxReadBytes, pagesFileFDDefaultMaxReadParallel)
 }
 
 // NewPagesFileFDWriter returns a FDWriter that writes a pages file to the
