@@ -410,6 +410,16 @@ func (t *Task) Yield() {
 	runtime.Gosched()
 }
 
+// HandleMemoryOOM handles an exhausted guest allocation budget after MM locks
+// have been released. The caller must be running on the task goroutine.
+func (t *Task) HandleMemoryOOM() bool {
+	if t.k.mf.MemoryLimit() == 0 || t.killed() || !t.killMemoryOOMVictim() {
+		return false
+	}
+	time.Sleep(time.Millisecond)
+	return !t.killed()
+}
+
 // killMemoryOOMVictim selects the largest resident process, adjusted by the
 // Linux oom_score_adj, instead of killing a small process that happens to fault.
 // Call only after releasing the faulting MemoryManager's locks.

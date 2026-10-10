@@ -22,6 +22,7 @@ import (
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/errors/linuxerr"
 	"gvisor.dev/gvisor/pkg/hostarch"
+	"gvisor.dev/gvisor/pkg/safemem"
 	"gvisor.dev/gvisor/pkg/sentry/arch"
 	"gvisor.dev/gvisor/pkg/sentry/contexttest"
 	"gvisor.dev/gvisor/pkg/sentry/limits"
@@ -105,6 +106,64 @@ func TestMemoryBudgetFallsBackFromHugePagePrefetch(t *testing.T) {
 				if n, err := target.CopyIn(ctx, addr, data, opts); err != nil || n != 1 || data[0] != want {
 					t.Fatalf("read after COW: n=%d, data=%v, want=%d, err=%v", n, data, want, err)
 				}
+			}
+		})
+	}
+}
+
+type memoryOOMContext struct {
+	context.Context
+	handle func() bool
+}
+
+func (ctx memoryOOMContext) HandleMemoryOOM() bool { return ctx.handle() }
+
+func TestMemoryBudgetCopyOutRetriesBeforeIO(t *testing.T) {
+	for _, vector := range []bool{false, true} {
+		t.Run(map[bool]string{false: "single-range", true: "vector"}[vector], func(t *testing.T) {
+			file, err := os.CreateTemp(t.TempDir(), "memory")
+			if err != nil {
+				t.Fatal(err)
+			}
+			mf, err := pgalloc.NewMemoryFile(file, pgalloc.MemoryFileOpts{MemoryLimit: 2 * hostarch.PageSize, DisableMemoryAccounting: true, DisableIMAWorkAround: true})
+			if err != nil {
+				file.Close()
+				t.Fatal(err)
+			}
+			defer mf.Destroy()
+			base := context.WithValue(contexttest.Context(t), pgalloc.CtxMemoryFile, mf)
+			mm := testMemoryManager(base, t)
+			defer mm.DecUsers(base)
+			addr, err := mm.MMap(base, memmap.MMapOpts{Length: 3 * hostarch.PageSize, Private: true, Perms: hostarch.ReadWrite, MaxPerms: hostarch.AnyAccess})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if n, err := mm.CopyOut(base, addr, []byte{1}, usermem.IOOpts{IgnorePermissions: true}); n != 1 || err != nil {
+				t.Fatalf("initial write: n=%d, err=%v", n, err)
+			}
+			handled, copied := 0, 0
+			ctx := memoryOOMContext{Context: base, handle: func() bool {
+				handled++
+				// MUnmap takes both MM locks; the callback must hold neither.
+				if err := mm.MUnmap(base, addr, hostarch.PageSize); err != nil {
+					t.Fatal(err)
+				}
+				return true
+			}}
+			start := addr + hostarch.Addr(hostarch.PageSize)
+			copy := func(blocks safemem.BlockSeq) (uint64, error) { copied++; return safemem.ZeroSeq(blocks) }
+			var n int64
+			if vector {
+				middle := start + hostarch.Addr(hostarch.PageSize)
+				n, err = mm.withVecInternalMappings(ctx, hostarch.AddrRangeSeqFromSlice([]hostarch.AddrRange{{Start: start, End: middle}, {Start: middle, End: middle + hostarch.Addr(hostarch.PageSize)}}), hostarch.Write, true, copy)
+			} else {
+				n, err = mm.withInternalMappings(ctx, hostarch.AddrRange{Start: start, End: start + 2*hostarch.Addr(hostarch.PageSize)}, hostarch.Write, true, copy)
+			}
+			if err != nil || n != 2*hostarch.PageSize || handled != 1 || copied != 1 {
+				t.Fatalf("copy after OOM: n=%d, err=%v, handled=%d, copied=%d", n, err, handled, copied)
+			}
+			if _, err := mm.CopyOut(ctx, 0, []byte{1}, usermem.IOOpts{}); err != linuxerr.EFAULT || handled != 1 {
+				t.Fatalf("invalid address: err=%v, handled=%d", err, handled)
 			}
 		})
 	}
