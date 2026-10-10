@@ -418,7 +418,21 @@ func (t *Task) killMemoryOOMVictim() bool {
 	var highestScore int64
 	for _, tg := range t.k.tasks.Root.ThreadGroups() {
 		leader := tg.Leader()
-		if leader == nil || leader.containerID != t.containerID || leader.OOMScoreAdj() == -1000 {
+		if leader == nil || leader.containerID != t.containerID {
+			continue
+		}
+		// An exiting task drops its MM before DecUsers releases its pages.
+		// Do not select another victim while that teardown is in progress.
+		tg.pidns.owner.mu.RLock()
+		signals := tg.signalLock()
+		releasing := tg.liveTasks != 0 && (tg.exiting || leader.killedLocked())
+		signals.mu.Unlock()
+		tg.pidns.owner.mu.RUnlock()
+		if releasing {
+			return true
+		}
+		// Linux excludes global init and oom_score_adj=-1000 from OOM kills.
+		if tg.IsInitIn(t.k.tasks.Root) || leader.OOMScoreAdj() == -1000 {
 			continue
 		}
 		var rss uint64
