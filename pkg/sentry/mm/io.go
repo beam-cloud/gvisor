@@ -108,6 +108,20 @@ func translateIOError(ctx context.Context, err error) error {
 	return linuxerr.EFAULT
 }
 
+// memoryOOMHandler is supplied only by contexts running on the task goroutine.
+// Invoke it after releasing MM locks, before converting allocation errors to EFAULT.
+type memoryOOMHandler interface {
+	HandleMemoryOOM() bool
+}
+
+func (mm *MemoryManager) memoryOOMHandler(ctx context.Context, err error) memoryOOMHandler {
+	if err != linuxerr.ENOMEM || mm.mf.MemoryLimit() == 0 {
+		return nil
+	}
+	handler, _ := ctx.(memoryOOMHandler)
+	return handler
+}
+
 // CopyOut implements usermem.IO.CopyOut.
 func (mm *MemoryManager) CopyOut(ctx context.Context, addr hostarch.Addr, src []byte, opts usermem.IOOpts) (int, error) {
 	ar, ok := mm.CheckIORange(addr, int64(len(src)))
@@ -520,6 +534,7 @@ func (mm *MemoryManager) LoadUint32(ctx context.Context, addr hostarch.Addr, opt
 //   - ioar.Length() != 0.
 //   - ioar.Contains(addr).
 func (mm *MemoryManager) handleASIOFault(ctx context.Context, addr hostarch.Addr, ioar hostarch.AddrRange, at hostarch.AccessType) error {
+retry:
 	// Try to map all remaining pages in the I/O operation. This RoundUp can't
 	// overflow because otherwise it would have been caught by CheckIORange.
 	end, _ := ioar.End.RoundUp()
@@ -545,6 +560,13 @@ func (mm *MemoryManager) handleASIOFault(ctx context.Context, addr hostarch.Addr
 	mm.activeMu.Lock()
 	pseg, pend, err := mm.getPMAsLocked(ctx, vseg, ar, at, true /* callerIndirectCommit */)
 	mm.mappingMu.RUnlock()
+	if handler := mm.memoryOOMHandler(ctx, err); handler != nil {
+		mm.activeMu.Unlock()
+		if handler.HandleMemoryOOM() {
+			goto retry
+		}
+		return linuxerr.EFAULT
+	}
 	if pendaddr := pend.Start(); pendaddr < ar.End {
 		if pendaddr <= ar.Start {
 			mm.activeMu.Unlock()
@@ -573,6 +595,7 @@ func (mm *MemoryManager) handleASIOFault(ctx context.Context, addr hostarch.Addr
 //
 // Preconditions: 0 < ar.Length() <= math.MaxInt64.
 func (mm *MemoryManager) withInternalMappings(ctx context.Context, ar hostarch.AddrRange, at hostarch.AccessType, ignorePermissions bool, f func(safemem.BlockSeq) (uint64, error)) (int64, error) {
+retry:
 	// If pmas are already available, we can do IO without touching mm.vmas or
 	// mm.mappingMu.
 	mm.activeMu.RLock()
@@ -599,6 +622,13 @@ func (mm *MemoryManager) withInternalMappings(ctx context.Context, ar hostarch.A
 	mm.activeMu.Lock()
 	pseg, pend, perr := mm.getPMAsLocked(ctx, vseg, ar, at, true /* callerIndirectCommit */)
 	mm.mappingMu.RUnlock()
+	if handler := mm.memoryOOMHandler(ctx, perr); handler != nil {
+		mm.activeMu.Unlock()
+		if handler.HandleMemoryOOM() {
+			goto retry
+		}
+		return 0, linuxerr.EFAULT
+	}
 	if pendaddr := pend.Start(); pendaddr < ar.End {
 		if pendaddr <= ar.Start {
 			mm.activeMu.Unlock()
@@ -650,6 +680,7 @@ func (mm *MemoryManager) withVecInternalMappings(ctx context.Context, ars hostar
 		return mm.withInternalMappings(ctx, ars.Head(), at, ignorePermissions, f)
 	}
 
+retry:
 	// If pmas are already available, we can do IO without touching mm.vmas or
 	// mm.mappingMu.
 	mm.activeMu.RLock()
@@ -673,6 +704,13 @@ func (mm *MemoryManager) withVecInternalMappings(ctx context.Context, ars hostar
 	mm.activeMu.Lock()
 	pars, perr := mm.getVecPMAsLocked(ctx, vars, at, true /* callerIndirectCommit */)
 	mm.mappingMu.RUnlock()
+	if handler := mm.memoryOOMHandler(ctx, perr); handler != nil {
+		mm.activeMu.Unlock()
+		if handler.HandleMemoryOOM() {
+			goto retry
+		}
+		return 0, linuxerr.EFAULT
+	}
 	if pars.NumBytes() == 0 {
 		mm.activeMu.Unlock()
 		return 0, translateIOError(ctx, perr)
