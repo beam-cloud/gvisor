@@ -19,7 +19,6 @@ import (
 	"sync"
 	"sync/atomic"
 
-	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/context"
 	"gvisor.dev/gvisor/pkg/errors/linuxerr"
 	"gvisor.dev/gvisor/pkg/hostarch"
@@ -331,7 +330,7 @@ func (mm *MemoryManager) getPMAsInternalLocked(ctx context.Context, vseg vmaIter
 					if callerIndirectCommit && (huge || allocAR.Length() == hostarch.PageSize) {
 						allocOpts.Mode = pgalloc.AllocateCallerIndirectCommit
 					}
-					fr, err := mm.allocate(ctx, uint64(allocAR.Length()), allocOpts)
+					fr, err := mm.mf.Allocate(uint64(allocAR.Length()), allocOpts)
 					if err != nil {
 						return pstart, pgap, err
 					}
@@ -467,7 +466,7 @@ func (mm *MemoryManager) getPMAsInternalLocked(ctx context.Context, vseg vmaIter
 					// Copy contents.
 					huge := mm.mf.HugepagesEnabled() && copyAR.IsHugePageAligned()
 					reader := safemem.BlockSeqReader{Blocks: mm.internalMappingsLocked(pseg, copyAR)}
-					fr, err := mm.allocate(ctx, uint64(copyAR.Length()), pgalloc.AllocOpts{
+					fr, err := mm.mf.Allocate(uint64(copyAR.Length()), pgalloc.AllocOpts{
 						Kind:       usage.Anonymous,
 						MemCgID:    memCgID,
 						Mode:       pgalloc.AllocateAndWritePopulate,
@@ -1159,16 +1158,4 @@ func (pfdrs *pendingFileDecRefs) Cleanup() {
 	}
 	pfdrs.slice = pfdrs.slice[:0]
 	pendingFileDecRefsPool.Put(pfdrs)
-}
-
-// allocate enforces the guest budget without allowing host OOM to kill the Sentry.
-func (mm *MemoryManager) allocate(ctx context.Context, length uint64, opts pgalloc.AllocOpts) (memmap.FileRange, error) {
-	fr, err := mm.mf.Allocate(length, opts)
-	if err == linuxerr.ENOMEM && mm.mf.MemoryLimit() != 0 {
-		if signal := linux.SignalNoInfoFuncFromContext(ctx); signal != nil {
-			ctx.Warningf("Guest memory limit exceeded: allocation=%d, limit=%d; sending SIGKILL", length, mm.mf.MemoryLimit())
-			signal(linux.SIGKILL)
-		}
-	}
-	return fr, err
 }
