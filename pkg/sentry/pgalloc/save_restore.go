@@ -943,6 +943,15 @@ func (f *MemoryFile) LoadFrom(ctx context.Context, r io.Reader, opts *LoadOpts) 
 	f.unwasteHuge.MoveFrom(mfs.unwasteHuge)
 	f.unfreeSmall.MoveFrom(mfs.unfreeSmall)
 	f.unfreeHuge.MoveFrom(mfs.unfreeHuge)
+	// Derive live charges from existing metadata, preserving the checkpoint format.
+	f.allocatedBytes = 0
+	for _, set := range []*unfreeSet{&f.unfreeSmall, &f.unfreeHuge} {
+		for seg := set.FirstSegment(); seg.Ok(); seg = seg.NextSegment() {
+			if seg.Value().refs != 0 {
+				f.allocatedBytes += seg.Range().Length()
+			}
+		}
+	}
 	f.subreleased = mfs.subreleased
 	f.memAcct.MoveFrom(mfs.memAcct)
 	chunks := mfs.chunks
