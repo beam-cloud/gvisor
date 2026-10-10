@@ -431,8 +431,7 @@ func (t *Task) killMemoryOOMVictim() bool {
 		if releasing {
 			return true
 		}
-		// Linux excludes global init and oom_score_adj=-1000 from OOM kills.
-		if tg.IsInitIn(t.k.tasks.Root) || leader.OOMScoreAdj() == -1000 {
+		if leader.OOMScoreAdj() == -1000 {
 			continue
 		}
 		var rss uint64
