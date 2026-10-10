@@ -109,6 +109,9 @@ type MemoryFile struct {
 
 	mu memoryFileMutex
 
+	// allocatedBytes counts live allocations once, including shared pages.
+	allocatedBytes uint64
+
 	// unwasteSmall and unwasteHuge track waste ranges backed by small/huge pages
 	// respectively. Both sets are "inverted"; segments exist for all ranges that
 	// are *not* waste, allowing use of segment.Set gap-tracking to efficiently
@@ -347,6 +350,9 @@ type evictableMemoryUserInfo struct {
 
 // MemoryFileOpts provides options to NewMemoryFile.
 type MemoryFileOpts struct {
+	// MemoryLimit bounds guest pages separately from host runtime overhead. Zero is unlimited.
+	MemoryLimit uint64
+
 	// DelayedEviction controls the extent to which the MemoryFile may delay
 	// eviction of evictable allocations.
 	DelayedEviction DelayedEvictionType
@@ -785,6 +791,15 @@ func (f *MemoryFile) findAllocatableAndMarkUsed(alloc *allocState) (fr memmap.Fi
 
 	f.mu.Lock()
 	defer f.mu.Unlock()
+
+	if limit := f.opts.MemoryLimit; limit != 0 && (alloc.length > limit || f.allocatedBytes > limit-alloc.length) {
+		return memmap.FileRange{}, linuxerr.ENOMEM
+	}
+	defer func() {
+		if err == nil && f.opts.MemoryLimit != 0 {
+			f.allocatedBytes += fr.Length()
+		}
+	}()
 
 	if alloc.willCommit {
 		// Try to recycle waste pages, since this avoids the overhead of
@@ -1229,6 +1244,9 @@ func (f *MemoryFile) DecRef(fr memmap.FileRange) {
 			if uf.refs == 0 {
 				// Mark these pages as waste.
 				wasteFR := ufseg.Range()
+				if f.opts.MemoryLimit != 0 {
+					f.allocatedBytes -= wasteFR.Length()
+				}
 				unwaste.RemoveFullRange(wasteFR)
 				haveWaste = true
 				// Reclassify waste memory as System until it's recycled or
@@ -2099,3 +2117,6 @@ func (evictableRangeSetFunctions) Merge(_ EvictableRange, _ evictableRangeSetVal
 func (evictableRangeSetFunctions) Split(_ EvictableRange, _ evictableRangeSetValue, _ uint64) (evictableRangeSetValue, evictableRangeSetValue) {
 	return evictableRangeSetValue{}, evictableRangeSetValue{}
 }
+
+// MemoryLimit returns the guest allocation budget. Zero means unlimited.
+func (f *MemoryFile) MemoryLimit() uint64 { return f.opts.MemoryLimit }

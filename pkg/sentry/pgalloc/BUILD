@@ -210,6 +210,7 @@ go_test(
     ],
     library = ":pgalloc",
     deps = [
+        "//pkg/errors/linuxerr",
         "//pkg/hostarch",
         "//pkg/sentry/memmap",
     ],

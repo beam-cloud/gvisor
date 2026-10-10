@@ -327,6 +327,17 @@ func (mm *MemoryManager) getPMAsInternalLocked(ctx context.Context, vseg vmaIter
 						allocOpts.Mode = pgalloc.AllocateCallerIndirectCommit
 					}
 					fr, err := mm.mf.Allocate(uint64(allocAR.Length()), allocOpts)
+					if err == linuxerr.ENOMEM && mm.mf.MemoryLimit() != 0 && allocAR != allocAR.Intersect(ar) {
+						// Preserve huge-page prefetch while there is room; near
+						// the guest limit, retry only the pages actually needed.
+						allocAR = allocAR.Intersect(ar)
+						huge, allocOpts.Huge = false, false
+						allocOpts.Mode = pgalloc.AllocateUncommitted
+						if callerIndirectCommit && allocAR.Length() == hostarch.PageSize {
+							allocOpts.Mode = pgalloc.AllocateCallerIndirectCommit
+						}
+						fr, err = mm.mf.Allocate(uint64(allocAR.Length()), allocOpts)
+					}
 					if err != nil {
 						return pstart, pgap, err
 					}
@@ -462,14 +473,22 @@ func (mm *MemoryManager) getPMAsInternalLocked(ctx context.Context, vseg vmaIter
 					// Copy contents.
 					huge := mm.mf.HugepagesEnabled() && copyAR.IsHugePageAligned()
 					reader := safemem.BlockSeqReader{Blocks: mm.internalMappingsLocked(pseg, copyAR)}
-					fr, err := mm.mf.Allocate(uint64(copyAR.Length()), pgalloc.AllocOpts{
+					allocOpts := pgalloc.AllocOpts{
 						Kind:       usage.Anonymous,
 						MemCgID:    memCgID,
 						Mode:       pgalloc.AllocateAndWritePopulate,
 						Huge:       huge,
 						Dir:        allocDir,
 						ReaderFunc: reader.ReadToBlocks,
-					})
+					}
+					fr, err := mm.mf.Allocate(uint64(copyAR.Length()), allocOpts)
+					if err == linuxerr.ENOMEM && mm.mf.MemoryLimit() != 0 && copyAR != copyAR.Intersect(ar) {
+						copyAR = copyAR.Intersect(ar)
+						huge, allocOpts.Huge = false, false
+						reader = safemem.BlockSeqReader{Blocks: mm.internalMappingsLocked(pseg, copyAR)}
+						allocOpts.ReaderFunc = reader.ReadToBlocks
+						fr, err = mm.mf.Allocate(uint64(copyAR.Length()), allocOpts)
+					}
 					if _, ok := err.(safecopy.BusError); ok {
 						// If we got SIGBUS during the copy, deliver SIGBUS to
 						// userspace (instead of SIGSEGV) if we're breaking

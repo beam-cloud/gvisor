@@ -17,10 +17,12 @@
 package pgalloc
 
 import (
+	"os"
 	"reflect"
 	"slices"
 	"testing"
 
+	"gvisor.dev/gvisor/pkg/errors/linuxerr"
 	"gvisor.dev/gvisor/pkg/hostarch"
 	"gvisor.dev/gvisor/pkg/sentry/memmap"
 )
@@ -616,5 +618,41 @@ func TestFindAllocatable(t *testing.T) {
 				t.Errorf("findAllocatableAndMarkUsed(%+v): got: end=%#x, want: %#x\n%v", alloc, fr.End, wantEnd, f)
 			}
 		})
+	}
+}
+
+func TestMemoryLimitCountsSharedPagesAndReleasesCharges(t *testing.T) {
+	file, err := os.CreateTemp(t.TempDir(), "memory")
+	if err != nil {
+		t.Fatal(err)
+	}
+	f, err := NewMemoryFile(file, MemoryFileOpts{MemoryLimit: 2 * page, DisableIMAWorkAround: true, DisableMemoryAccounting: true, DelayedEviction: DelayedEvictionDisabled})
+	if err != nil {
+		file.Close()
+		t.Fatal(err)
+	}
+	defer f.Destroy()
+	opts := AllocOpts{Mode: AllocateUncommitted}
+	fr, err := f.Allocate(2*page, opts)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.IncRef(fr, 0)
+	f.DecRef(fr)
+	if _, err := f.Allocate(page, opts); err != linuxerr.ENOMEM {
+		t.Fatalf("shared pages lost their charge: %v", err)
+	}
+	f.DecRef(memmap.FileRange{fr.Start, fr.Start + page})
+	replacement, err := f.Allocate(page, opts)
+	if err != nil {
+		t.Fatalf("released page still charged: %v", err)
+	}
+	f.DecRef(replacement)
+	f.DecRef(memmap.FileRange{fr.Start + page, fr.End})
+	if f.allocatedBytes != 0 {
+		t.Fatalf("leaked charge: %d", f.allocatedBytes)
+	}
+	if _, err := f.Allocate(3*page, opts); err != linuxerr.ENOMEM {
+		t.Fatalf("oversized allocation accepted: %v", err)
 	}
 }

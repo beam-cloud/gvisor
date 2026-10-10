@@ -624,7 +624,7 @@ func (cm *containerManager) Restore(o *RestoreOpts, _ *struct{}) (retErr error) 
 	}
 
 	// Create the main MemoryFile.
-	cm.restorer.mainMF, err = createMemoryFile(cm.l.root.conf.AppHugePages, cm.l.hostTHP)
+	cm.restorer.mainMF, err = createMemoryFile(cm.l.root.conf.AppHugePages, cm.l.hostTHP, cm.l.k.MemoryFile().MemoryLimit())
 	if err != nil {
 		return fmt.Errorf("creating memory file: %v", err)
 	}

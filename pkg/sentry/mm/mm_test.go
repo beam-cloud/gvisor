@@ -15,6 +15,7 @@
 package mm
 
 import (
+	"os"
 	"reflect"
 	"testing"
 
@@ -48,6 +49,65 @@ func testMemoryManagerWithMmapDirection(ctx context.Context, t *testing.T, mmapD
 
 func testMemoryManager(ctx context.Context, t *testing.T) *MemoryManager {
 	return testMemoryManagerWithMmapDirection(ctx, t, arch.MmapBottomUp)
+}
+
+func TestMemoryBudgetFallsBackFromHugePagePrefetch(t *testing.T) {
+	for _, cow := range []bool{false, true} {
+		t.Run(map[bool]string{false: "anonymous", true: "copy-on-write"}[cow], func(t *testing.T) {
+			file, err := os.CreateTemp(t.TempDir(), "memory")
+			if err != nil {
+				t.Fatal(err)
+			}
+			limit := uint64(hostarch.HugePageSize - hostarch.PageSize)
+			if cow {
+				limit += hostarch.HugePageSize
+			}
+			mf, err := pgalloc.NewMemoryFile(file, pgalloc.MemoryFileOpts{MemoryLimit: limit, DisableMemoryAccounting: true, DisableIMAWorkAround: true})
+			if err != nil {
+				file.Close()
+				t.Fatal(err)
+			}
+			defer mf.Destroy()
+			ctx := context.WithValue(contexttest.Context(t), pgalloc.CtxMemoryFile, mf)
+			mm := testMemoryManager(ctx, t)
+			defer mm.DecUsers(ctx)
+			addr, err := mm.MMap(ctx, memmap.MMapOpts{
+				Addr: hostarch.Addr(hostarch.HugePageSize), Fixed: true,
+				Length: hostarch.HugePageSize, Private: true,
+				Perms: hostarch.ReadWrite, MaxPerms: hostarch.AnyAccess,
+			})
+			if err != nil {
+				t.Fatal(err)
+			}
+			opts := usermem.IOOpts{IgnorePermissions: true}
+			if n, err := mm.CopyOut(ctx, addr, []byte{1}, opts); err != nil || n != 1 {
+				t.Fatalf("initial write: n=%d, err=%v", n, err)
+			}
+			if !cow {
+				if got := mm.ResidentSetSize(); got != hostarch.PageSize {
+					t.Fatalf("resident bytes=%d, want one page", got)
+				}
+				return
+			}
+			if got := mm.ResidentSetSize(); got != hostarch.HugePageSize {
+				t.Fatalf("prefetched bytes=%d, want one huge page", got)
+			}
+			child, err := mm.Fork(ctx)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer child.DecUsers(ctx)
+			if n, err := child.CopyOut(ctx, addr, []byte{2}, opts); err != nil || n != 1 {
+				t.Fatalf("COW write: n=%d, err=%v", n, err)
+			}
+			for target, want := range map[*MemoryManager]byte{mm: 1, child: 2} {
+				data := make([]byte, 1)
+				if n, err := target.CopyIn(ctx, addr, data, opts); err != nil || n != 1 || data[0] != want {
+					t.Fatalf("read after COW: n=%d, data=%v, want=%d, err=%v", n, data, want, err)
+				}
+			}
+		})
+	}
 }
 
 func TestMappedFileRanges(t *testing.T) {

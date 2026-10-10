@@ -18,6 +18,7 @@ import (
 	"fmt"
 	"runtime"
 	"runtime/trace"
+	"time"
 
 	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/errors/linuxerr"
@@ -284,6 +285,13 @@ func (app *runApp) execute(t *Task) taskRunState {
 				return (*runApp)(nil)
 			}
 
+			if err == linuxerr.ENOMEM && t.k.mf.MemoryLimit() != 0 && t.killMemoryOOMVictim() {
+				// Let the selected process exit and release its pages before
+				// retrying the fault in a surviving process.
+				time.Sleep(time.Millisecond)
+				return (*runApp)(nil)
+			}
+
 			// Is this a vsyscall that we need emulate?
 			//
 			// Note that we don't track vsyscalls as part of a
@@ -400,4 +408,55 @@ func (t *Task) Yield() {
 	t.yieldCount.Add(1)
 	t.tg.yieldCount.Add(1)
 	runtime.Gosched()
+}
+
+// killMemoryOOMVictim selects the largest resident process, adjusted by the
+// Linux oom_score_adj, instead of killing a small process that happens to fault.
+// Call only after releasing the faulting MemoryManager's locks.
+func (t *Task) killMemoryOOMVictim() bool {
+	var victim *Task
+	var highestScore int64
+	for _, tg := range t.k.tasks.Root.ThreadGroups() {
+		leader := tg.Leader()
+		if leader == nil || leader.containerID != t.containerID {
+			continue
+		}
+		// An exiting task drops its MM before DecUsers releases its pages.
+		// Do not select another victim while that teardown is in progress.
+		tg.pidns.owner.mu.RLock()
+		signals := tg.signalLock()
+		releasing := tg.liveTasks != 0 && (tg.exiting || leader.killedLocked())
+		signals.mu.Unlock()
+		tg.pidns.owner.mu.RUnlock()
+		if releasing {
+			return true
+		}
+		if leader.OOMScoreAdj() == -1000 {
+			continue
+		}
+		var rss uint64
+		leader.WithMuLocked(func(candidate *Task) {
+			if memory := candidate.MemoryManager(); memory != nil {
+				rss = memory.ResidentSetSize()
+			}
+		})
+		score := int64(rss) + int64(leader.OOMScoreAdj())*int64(t.k.mf.MemoryLimit())/1000
+		if rss != 0 && (victim == nil || score > highestScore) {
+			victim, highestScore = leader, score
+		}
+	}
+	if victim == nil {
+		return false
+	}
+	signals := victim.tg.signalLock()
+	dying := victim.killedLocked() || victim.tg.exiting
+	signals.mu.Unlock()
+	if dying {
+		return true
+	}
+	if err := victim.SendGroupSignal(SignalInfoPriv(linux.SIGKILL)); err != nil {
+		return false
+	}
+	t.Warningf("Guest memory limit exceeded: limit=%d, victim=%d", t.k.mf.MemoryLimit(), t.k.tasks.Root.IDOfThreadGroup(victim.tg))
+	return true
 }

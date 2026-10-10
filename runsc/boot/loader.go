@@ -642,7 +642,11 @@ func New(args Args) (*Loader, error) {
 	}
 
 	// Create memory file.
-	mf, err := createMemoryFile(args.Conf.AppHugePages, args.HostTHP)
+	memoryLimit := uint64(0)
+	if args.Spec.Annotations[specutils.AnnotationTotalMemory] != "" && args.Spec.Linux != nil && args.Spec.Linux.Resources != nil && args.Spec.Linux.Resources.Memory != nil && args.Spec.Linux.Resources.Memory.Limit != nil {
+		memoryLimit = args.TotalMem
+	}
+	mf, err := createMemoryFile(args.Conf.AppHugePages, args.HostTHP, memoryLimit)
 	if err != nil {
 		return nil, fmt.Errorf("creating memory file: %w", err)
 	}
@@ -975,7 +979,7 @@ func createPlatform(conf *config.Config, numCPU int, deviceFile *fd.FD, sandboxI
 	})
 }
 
-func createMemoryFile(appHugePages bool, hostTHP HostTHP) (*pgalloc.MemoryFile, error) {
+func createMemoryFile(appHugePages bool, hostTHP HostTHP, memoryLimit uint64) (*pgalloc.MemoryFile, error) {
 	const memfileName = "runsc-memory"
 	memfd, err := memutil.CreateMemFD(memfileName, 0)
 	if err != nil {
@@ -984,6 +988,7 @@ func createMemoryFile(appHugePages bool, hostTHP HostTHP) (*pgalloc.MemoryFile, 
 	memfile := os.NewFile(uintptr(memfd), memfileName)
 
 	mfopts := pgalloc.MemoryFileOpts{
+		MemoryLimit: memoryLimit,
 		// We can't enable pgalloc.MemoryFileOpts.UseHostMemcgPressure even if
 		// there are memory cgroups specified, because at this point we're already
 		// in a mount namespace in which the relevant cgroupfs is not visible.
