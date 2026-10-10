@@ -2118,5 +2118,5 @@ func (evictableRangeSetFunctions) Split(_ EvictableRange, _ evictableRangeSetVal
 	return evictableRangeSetValue{}, evictableRangeSetValue{}
 }
 
-// HasMemoryLimit reports whether guest allocation enforcement is enabled.
-func (f *MemoryFile) HasMemoryLimit() bool { return f.opts.MemoryLimit != 0 }
+// MemoryLimit returns the guest allocation budget. Zero means unlimited.
+func (f *MemoryFile) MemoryLimit() uint64 { return f.opts.MemoryLimit }

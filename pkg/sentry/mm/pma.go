@@ -254,7 +254,7 @@ func (mm *MemoryManager) getPMAsInternalLocked(ctx context.Context, vseg vmaIter
 
 	// Limit the range we allocate to ar, aligned to hugepage boundaries.
 	hugeMaskAR := hugepageAligned(ar)
-	if mm.mf.HasMemoryLimit() {
+	if mm.mf.MemoryLimit() != 0 {
 		// Charge touched pages rather than speculative, untouched mappings.
 		hugeMaskAR = ar
 	}
@@ -1164,7 +1164,7 @@ func (pfdrs *pendingFileDecRefs) Cleanup() {
 // allocate enforces the guest budget without allowing host OOM to kill the Sentry.
 func (mm *MemoryManager) allocate(ctx context.Context, length uint64, opts pgalloc.AllocOpts) (memmap.FileRange, error) {
 	fr, err := mm.mf.Allocate(length, opts)
-	if err == linuxerr.ENOMEM && mm.mf.HasMemoryLimit() {
+	if err == linuxerr.ENOMEM && mm.mf.MemoryLimit() != 0 {
 		if signal := linux.SignalNoInfoFuncFromContext(ctx); signal != nil {
 			signal(linux.SIGKILL)
 		}

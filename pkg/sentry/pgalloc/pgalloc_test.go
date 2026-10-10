@@ -637,7 +637,7 @@ func TestMemoryLimitCountsSharedPagesAndReleasesCharges(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	f.IncRef(fr)
+	f.IncRef(fr, 0)
 	f.DecRef(fr)
 	if _, err := f.Allocate(page, opts); err != linuxerr.ENOMEM {
 		t.Fatalf("shared pages lost their charge: %v", err)
