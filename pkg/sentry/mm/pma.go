@@ -1166,6 +1166,7 @@ func (mm *MemoryManager) allocate(ctx context.Context, length uint64, opts pgall
 	fr, err := mm.mf.Allocate(length, opts)
 	if err == linuxerr.ENOMEM && mm.mf.MemoryLimit() != 0 {
 		if signal := linux.SignalNoInfoFuncFromContext(ctx); signal != nil {
+			ctx.Warningf("Guest memory limit exceeded: allocation=%d, limit=%d; sending SIGKILL", length, mm.mf.MemoryLimit())
 			signal(linux.SIGKILL)
 		}
 	}
