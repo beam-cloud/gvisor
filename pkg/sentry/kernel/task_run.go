@@ -459,12 +459,17 @@ func (t *Task) killMemoryOOMVictim() bool {
 		return false
 	}
 	signals := victim.tg.signalLock()
-	dying := victim.killedLocked() || victim.tg.exiting
-	signals.mu.Unlock()
-	if dying {
+	if victim.killedLocked() || victim.tg.exiting {
+		signals.mu.Unlock()
 		return true
 	}
-	if err := victim.SendGroupSignal(SignalInfoPriv(linux.SIGKILL)); err != nil {
+	// Check, kill, and count under one lock, including against ordinary kills.
+	err := victim.sendSignalLocked(SignalInfoPriv(linux.SIGKILL), true /* group */)
+	if err == nil {
+		t.k.guestOOMKills.Add(1)
+	}
+	signals.mu.Unlock()
+	if err != nil {
 		return false
 	}
 	t.Warningf("Guest memory limit exceeded: limit=%d, victim=%d", t.k.mf.MemoryLimit(), t.k.tasks.Root.IDOfThreadGroup(victim.tg))

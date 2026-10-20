@@ -185,6 +185,13 @@ func (cm *containerManager) Event(cid *string, out *EventOut) error {
 		}
 	}
 	out.Event.Data.Memory.Usage.Usage = memUsage
+	// Guest-budget kills do not increment the host cgroup's OOM counter.
+	if *cid == cm.l.sandboxID {
+		out.Event.Data.Memory.Raw = map[string]uint64{
+			"guest_oom_kill":     cm.l.k.GuestOOMKills(),
+			"guest_memory_limit": cm.l.k.MemoryFile().MemoryLimit(),
+		}
+	}
 
 	// CPU usage by container.
 	out.ContainerUsage, err = cm.getCPUUsageFromCgroups()

@@ -58,6 +58,76 @@ import (
 
 const pollTimeout = 90 * time.Second
 
+// Guest budget OOMs must be observable without terminating the sandbox, and
+// ordinary SIGKILLs must not be mistaken for an OOM.
+func TestGuestOOMKillEventsPreserveSandbox(t *testing.T) {
+	spec, conf := sleepSpecConf(t)
+	const guestLimit = 64 << 20
+	spec.Annotations[specutils.AnnotationTotalMemory] = strconv.Itoa(guestLimit)
+	// Leave enough host headroom to exercise the guest OOM policy.
+	hostLimit := int64(2 << 30)
+	spec.Linux = &specs.Linux{Resources: &specs.LinuxResources{Memory: &specs.LinuxMemory{Limit: &hostLimit}}}
+	_, bundleDir, clean, err := testutil.SetupContainer(spec, conf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer clean()
+	c, err := New(conf, Args{ID: testutil.RandomContainerID(), Spec: spec, BundleDir: bundleDir})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer c.Destroy()
+	if err := c.Start(conf); err != nil {
+		t.Fatal(err)
+	}
+	checkKills := func(want uint64) {
+		t.Helper()
+		event, err := c.Event()
+		if err != nil {
+			t.Fatal(err)
+		}
+		got, ok := event.Event.Data.Memory.Raw["guest_oom_kill"]
+		if !ok || got != want {
+			t.Fatalf("guest OOM counter = %d (present=%v), want %d", got, ok, want)
+		}
+		if got := event.Event.Data.Memory.Raw["guest_memory_limit"]; got != guestLimit {
+			t.Fatalf("guest memory limit = %d, want %d", got, guestLimit)
+		}
+	}
+	checkKills(0)
+	status, err := execute(conf, c, "/bin/sh", "-c", "kill -9 $$")
+	if err != nil || !status.Signaled() || status.Signal() != unix.SIGKILL {
+		t.Fatalf("explicit kill: status=%v, err=%v", status, err)
+	}
+	checkKills(0)
+	// Native writes release the GIL and exercise concurrent guest OOM faults.
+	const exhaustMemory = `
+import ctypes, mmap, threading
+chunk = 16 * 1024 * 1024
+pages = mmap.mmap(-1, 8 * chunk, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+base = ctypes.addressof(ctypes.c_char.from_buffer(pages))
+start = threading.Barrier(8)
+def allocate(i):
+    start.wait()
+    ctypes.memset(base + i * chunk, 1, chunk)
+threads = [threading.Thread(target=allocate, args=(i,)) for i in range(8)]
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join()
+`
+	for wantKills := uint64(1); wantKills <= 2; wantKills++ {
+		status, err = execute(conf, c, "/usr/bin/python3", "-c", exhaustMemory)
+		if err != nil || !status.Signaled() || status.Signal() != unix.SIGKILL {
+			t.Fatalf("guest OOM: status=%v, err=%v", status, err)
+		}
+		checkKills(wantKills)
+		if status, err := execute(conf, c, "/bin/true"); err != nil || status != 0 {
+			t.Fatalf("sandbox did not survive guest OOM: status=%v, err=%v", status, err)
+		}
+	}
+}
+
 func TestMain(m *testing.M) {
 	config.RegisterFlags(flag.CommandLine)
 	log.SetLevel(log.Debug)

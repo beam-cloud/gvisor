@@ -221,6 +221,10 @@ type Kernel struct {
 	// is repopulated as tasks re-enter uninterruptible sleep.
 	blockedTasks atomicbitops.Int64 `state:"nosave"`
 
+	// guestOOMKills counts successful guest-budget OOM kills in this runtime.
+	// Reset on restore so earlier kills are not reported as new failures.
+	guestOOMKills atomicbitops.Uint64 `state:"nosave"`
+
 	// runningTasksCond is signaled when runningTasks is incremented from 0 to 1.
 	//
 	// Invariant: runningTasksCond.L == &runningTasksMu.
@@ -1987,6 +1991,11 @@ func (k *Kernel) SetMemoryFile(mf *pgalloc.MemoryFile) {
 // MemoryFile returns the MemoryFile that provides application memory.
 func (k *Kernel) MemoryFile() *pgalloc.MemoryFile {
 	return k.mf
+}
+
+// GuestOOMKills returns the number of guest-budget OOM kills since startup or restore.
+func (k *Kernel) GuestOOMKills() uint64 {
+	return k.guestOOMKills.Load()
 }
 
 // SupervisorContext returns a Context with maximum privileges in k. It should
