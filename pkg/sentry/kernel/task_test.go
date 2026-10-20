@@ -17,74 +17,8 @@ package kernel
 import (
 	"testing"
 
-	"gvisor.dev/gvisor/pkg/abi/linux"
 	"gvisor.dev/gvisor/pkg/sentry/kernel/sched"
-	"gvisor.dev/gvisor/pkg/sentry/platform"
 )
-
-type oomTestContext struct{ platform.Context }
-
-func (*oomTestContext) Interrupt() {}
-
-func newOOMTestTask() *Task {
-	tg := &ThreadGroup{signalHandlers: NewSignalHandlers()}
-	task := &Task{k: &Kernel{}, p: &oomTestContext{}, interruptChan: make(chan struct{}, 1)}
-	task.tg = tg
-	tg.tasks.PushBack(task)
-	prefix := "OOM test: "
-	task.logPrefix.Store(&prefix)
-	return task
-}
-
-func TestConcurrentMemoryOOMKillsCountOneVictim(t *testing.T) {
-	for attempt := 0; attempt < 100; attempt++ {
-		victim := newOOMTestTask()
-		start := make(chan struct{})
-		results := make(chan bool, 32)
-		for i := 0; i < cap(results); i++ {
-			go func() {
-				<-start
-				sent, err := victim.sendMemoryOOMKill()
-				if err != nil {
-					t.Errorf("sendMemoryOOMKill: %v", err)
-				}
-				results <- sent
-			}()
-		}
-		close(start)
-		var sent int
-		for i := 0; i < cap(results); i++ {
-			if <-results {
-				sent++
-			}
-		}
-		if got := victim.k.GuestOOMKills(); got != 1 || sent != 1 {
-			t.Fatalf("attempt %d: OOM kills=%d, new signals=%d; want one victim", attempt, got, sent)
-		}
-	}
-}
-
-func TestMemoryOOMKillDoesNotCountEarlierSIGKILL(t *testing.T) {
-	victim := newOOMTestTask()
-	signals := victim.tg.signalLock()
-	result := make(chan bool, 1)
-	go func() {
-		sent, err := victim.sendMemoryOOMKill()
-		if err != nil {
-			t.Errorf("sendMemoryOOMKill: %v", err)
-		}
-		result <- sent
-	}()
-	// An ordinary kill wins while the OOM path is waiting for the signal lock.
-	err := victim.sendSignalLocked(SignalInfoPriv(linux.SIGKILL), true /* group */)
-	signals.mu.Unlock()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if sent := <-result; sent || victim.k.GuestOOMKills() != 0 {
-		t.Fatalf("ordinary SIGKILL was counted as an OOM: sent=%v, kills=%d", sent, victim.k.GuestOOMKills())
-	}
-}
 
 func TestTaskCPU(t *testing.T) {
 	for _, test := range []struct {

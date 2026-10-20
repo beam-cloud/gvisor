@@ -458,25 +458,20 @@ func (t *Task) killMemoryOOMVictim() bool {
 	if victim == nil {
 		return false
 	}
-	sent, err := victim.sendMemoryOOMKill()
-	if sent {
-		t.Warningf("Guest memory limit exceeded: limit=%d, victim=%d", t.k.mf.MemoryLimit(), t.k.tasks.Root.IDOfThreadGroup(victim.tg))
+	signals := victim.tg.signalLock()
+	if victim.killedLocked() || victim.tg.exiting {
+		signals.mu.Unlock()
+		return true
 	}
-	return err == nil
-}
-
-// sendMemoryOOMKill returns whether a new guest OOM kill was sent. Check,
-// delivery, and accounting share the signal lock so concurrent OOM attempts
-// and ordinary SIGKILLs cannot cause duplicate or misattributed OOM counts.
-func (t *Task) sendMemoryOOMKill() (bool, error) {
-	signals := t.tg.signalLock()
-	defer signals.mu.Unlock()
-	if t.killedLocked() || t.tg.exiting {
-		return false, nil
+	// Check, kill, and count under one lock, including against ordinary kills.
+	err := victim.sendSignalLocked(SignalInfoPriv(linux.SIGKILL), true /* group */)
+	if err == nil {
+		t.k.guestOOMKills.Add(1)
 	}
-	if err := t.sendSignalLocked(SignalInfoPriv(linux.SIGKILL), true /* group */); err != nil {
-		return false, err
+	signals.mu.Unlock()
+	if err != nil {
+		return false
 	}
-	t.k.guestOOMKills.Add(1)
-	return true, nil
+	t.Warningf("Guest memory limit exceeded: limit=%d, victim=%d", t.k.mf.MemoryLimit(), t.k.tasks.Root.IDOfThreadGroup(victim.tg))
+	return true
 }

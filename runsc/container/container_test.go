@@ -100,10 +100,21 @@ func TestGuestOOMKillEventsPreserveSandbox(t *testing.T) {
 		t.Fatalf("explicit kill: status=%v, err=%v", status, err)
 	}
 	checkKills(0)
+	// Native writes release the GIL and exercise concurrent guest OOM faults.
 	const exhaustMemory = `
-pages = []
-while True:
-    pages.append(bytearray(1024 * 1024))
+import ctypes, mmap, threading
+chunk = 16 * 1024 * 1024
+pages = mmap.mmap(-1, 8 * chunk, flags=mmap.MAP_PRIVATE | mmap.MAP_ANONYMOUS)
+base = ctypes.addressof(ctypes.c_char.from_buffer(pages))
+start = threading.Barrier(8)
+def allocate(i):
+    start.wait()
+    ctypes.memset(base + i * chunk, 1, chunk)
+threads = [threading.Thread(target=allocate, args=(i,)) for i in range(8)]
+for thread in threads:
+    thread.start()
+for thread in threads:
+    thread.join()
 `
 	for wantKills := uint64(1); wantKills <= 2; wantKills++ {
 		status, err = execute(conf, c, "/usr/bin/python3", "-c", exhaustMemory)
