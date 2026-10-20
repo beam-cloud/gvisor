@@ -447,6 +447,7 @@ go_test(
     library = ":kernel",
     deps = [
         "//pkg/abi",
+        "//pkg/abi/linux",
         "//pkg/context",
         "//pkg/errors/linuxerr",
         "//pkg/hostarch",
@@ -456,6 +457,7 @@ go_test(
         "//pkg/sentry/kernel/sched",
         "//pkg/sentry/limits",
         "//pkg/sentry/pgalloc",
+        "//pkg/sentry/platform",
         "//pkg/sentry/time",
         "//pkg/sentry/usage",
         "//pkg/sentry/vfs",
