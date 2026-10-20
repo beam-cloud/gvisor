@@ -467,6 +467,7 @@ func (t *Task) killMemoryOOMVictim() bool {
 	if err := victim.SendGroupSignal(SignalInfoPriv(linux.SIGKILL)); err != nil {
 		return false
 	}
+	t.k.guestOOMKills.Add(1)
 	t.Warningf("Guest memory limit exceeded: limit=%d, victim=%d", t.k.mf.MemoryLimit(), t.k.tasks.Root.IDOfThreadGroup(victim.tg))
 	return true
 }
