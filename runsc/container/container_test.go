@@ -77,6 +77,10 @@ func TestGuestOOMKillEventsPreserveSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Destroy()
+	// A metrics scrape before start must tolerate init not existing yet.
+	if _, err := c.Sandbox.ExportMetrics(control.MetricsExportOpts{}); err != nil {
+		t.Fatalf("metrics before start: %v", err)
+	}
 	if err := c.Start(conf); err != nil {
 		t.Fatal(err)
 	}
@@ -125,6 +129,54 @@ for thread in threads:
 		if status, err := execute(conf, c, "/bin/true"); err != nil || status != 0 {
 			t.Fatalf("sandbox did not survive guest OOM: status=%v, err=%v", status, err)
 		}
+	}
+}
+
+// Final metrics must distinguish an OOM of init from a prior child OOM.
+func TestGuestOOMFinalMetrics(t *testing.T) {
+	const allocate = "a=bytearray(128<<20);exec('for i in range(0,len(a),4096): a[i]=1')"
+	for _, test := range []struct {
+		name        string
+		args        []string
+		total, init string
+		status      unix.WaitStatus
+	}{
+		{"init OOM", []string{"/usr/bin/python3", "-c", allocate}, "1", "1", 9},
+		{"child OOM then SIGKILL", []string{"/bin/sh", "-c", "/usr/bin/python3 -c \"" + allocate + "\"; kill -9 $$"}, "1", "0", 9},
+		{"plain SIGKILL", []string{"/bin/sh", "-c", "kill -9 $$"}, "0", "0", 9},
+		{"success", []string{"/bin/sh", "-c", "exit 0"}, "0", "0", 0},
+		{"error", []string{"/bin/sh", "-c", "exit 42"}, "0", "0", 42 << 8},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			spec, conf := sleepSpecConf(t)
+			spec.Process.Args = test.args
+			spec.Annotations[specutils.AnnotationTotalMemory] = strconv.Itoa(64 << 20)
+			hostLimit := int64(2 << 30)
+			spec.Linux = &specs.Linux{Resources: &specs.LinuxResources{Memory: &specs.LinuxMemory{Limit: &hostLimit}}}
+			conf.FinalMetricsLog = filepath.Join(t.TempDir(), "metrics")
+			_, bundle, clean, err := testutil.SetupContainer(spec, conf)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer clean()
+			status, err := Run(conf, Args{ID: testutil.RandomContainerID(), Spec: spec, BundleDir: bundle, Attached: true})
+			if err != nil || status != test.status {
+				t.Fatalf("status=%v want=%v, err=%v", status, test.status, err)
+			}
+			data, err := os.ReadFile(conf.FinalMetricsLog)
+			if err != nil {
+				t.Fatal(err)
+			}
+			counts := map[string]string{"runsc_memory_guest_oom_kills": "0", "runsc_memory_guest_init_oom_kills": "0"}
+			for _, line := range strings.Split(string(data), "\n") {
+				if fields := strings.Fields(line); len(fields) >= 2 {
+					counts[fields[0]] = fields[1]
+				}
+			}
+			if counts["runsc_task_init_exit_status"] != strconv.FormatUint(uint64(test.status), 10) || counts["runsc_memory_guest_oom_kills"] != test.total || counts["runsc_memory_guest_init_oom_kills"] != test.init {
+				t.Fatalf("want total=%s init=%s, final metrics:\n%s", test.total, test.init, data)
+			}
+		})
 	}
 }
 

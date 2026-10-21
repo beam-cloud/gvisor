@@ -641,6 +641,7 @@ func (b *Boot) Execute(_ context.Context, f *flag.FlagSet, args ...any) subcomma
 	// This needs to happen after the kernel is initialized (such that all metrics are registered)
 	// but before the start-sync file is notified, as the parent process needs to query for
 	// registered metrics prior to sending the start signal.
+	l.RegisterExitMetrics()
 	metric.Initialize()
 	var finalMetricsFile *os.File
 	if b.finalMetricsFD != -1 {

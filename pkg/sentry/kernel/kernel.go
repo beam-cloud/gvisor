@@ -223,7 +223,8 @@ type Kernel struct {
 
 	// guestOOMKills counts successful guest-budget OOM kills in this runtime.
 	// Reset on restore so earlier kills are not reported as new failures.
-	guestOOMKills atomicbitops.Uint64 `state:"nosave"`
+	guestOOMKills     atomicbitops.Uint64 `state:"nosave"`
+	guestInitOOMKills atomicbitops.Uint64 `state:"nosave"`
 
 	// runningTasksCond is signaled when runningTasks is incremented from 0 to 1.
 	//
@@ -1996,6 +1997,11 @@ func (k *Kernel) MemoryFile() *pgalloc.MemoryFile {
 // GuestOOMKills returns the number of guest-budget OOM kills since startup or restore.
 func (k *Kernel) GuestOOMKills() uint64 {
 	return k.guestOOMKills.Load()
+}
+
+// GuestInitOOMKills counts guest OOM kills of the sandbox's root init process.
+func (k *Kernel) GuestInitOOMKills() uint64 {
+	return k.guestInitOOMKills.Load()
 }
 
 // SupervisorContext returns a Context with maximum privileges in k. It should

@@ -467,6 +467,10 @@ func (t *Task) killMemoryOOMVictim() bool {
 	err := victim.sendSignalLocked(SignalInfoPriv(linux.SIGKILL), true /* group */)
 	if err == nil {
 		t.k.guestOOMKills.Add(1)
+		// globalInit is immutable once tasks start; do not take extMu here.
+		if victim.tg == t.k.globalInit {
+			t.k.guestInitOOMKills.Add(1)
+		}
 	}
 	signals.mu.Unlock()
 	if err != nil {
