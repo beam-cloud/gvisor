@@ -1724,6 +1724,30 @@ func (l *Loader) WaitForStartSignal() {
 	<-l.ctrl.manager.startChan
 }
 
+// RegisterExitMetrics preserves exit status and OOM evidence in final metrics,
+// even when init exits before a stats observer or wait RPC can see it.
+func (l *Loader) RegisterExitMetrics() {
+	register := func(name string, read func(*kernel.Kernel) uint64) {
+		metric.MustRegisterCustomUint64Metric(name, metric.Uint64Metadata{
+			Cumulative:  true,
+			Description: "Guest-budget OOM kills since startup or restore.",
+		}, func(...*metric.FieldValue) uint64 {
+			l.mu.Lock()
+			defer l.mu.Unlock()
+			return read(l.k)
+		})
+	}
+	register("/memory/guest_oom_kills", (*kernel.Kernel).GuestOOMKills)
+	register("/memory/guest_init_oom_kills", (*kernel.Kernel).GuestInitOOMKills)
+	metric.MustRegisterCustomUint64Metric("/task/init_exit_status", metric.Uint64Metadata{
+		Description: "Root init wait status, valid after init exits.",
+	}, func(...*metric.FieldValue) uint64 {
+		l.mu.Lock()
+		defer l.mu.Unlock()
+		return uint64(l.k.GlobalInit().ExitStatus())
+	})
+}
+
 // WaitExit waits for the root container to exit, and returns its exit status.
 func (l *Loader) WaitExit() linux.WaitStatus {
 	// Wait for container.
