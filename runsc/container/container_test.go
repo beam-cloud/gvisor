@@ -77,6 +77,10 @@ func TestGuestOOMKillEventsPreserveSandbox(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer c.Destroy()
+	// A metrics scrape before start must tolerate init not existing yet.
+	if _, err := c.Sandbox.ExportMetrics(control.MetricsExportOpts{}); err != nil {
+		t.Fatalf("metrics before start: %v", err)
+	}
 	if err := c.Start(conf); err != nil {
 		t.Fatal(err)
 	}
